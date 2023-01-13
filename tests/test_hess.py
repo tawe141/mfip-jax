@@ -9,6 +9,7 @@ def random_vec():
     key = jax.random.PRNGKey(42)
     return jax.random.normal(key, shape=(16,))
 
+
 @pytest.fixture
 def random_batch():
     key = jax.random.PRNGKey(42)
@@ -26,3 +27,9 @@ def test_hvp(random_vec):
     hess_vec_product = hvp(rbf, random_vec, random_vec, dx2, l=1.0)
     assert jnp.allclose(hess_vec_product, 2 * jnp.eye(16) @ dx2)
 
+
+def test_batch_hvp(random_batch):
+    key = jax.random.PRNGKey(41)
+    dx2 = jax.random.normal(key, shape=(len(random_batch), 16, 8))
+    with jax.disable_jit():
+        hess_vec_product = hvp(rbf, random_batch, random_batch, dx2, l=1.0)
