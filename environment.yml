@@ -1,6 +1,5 @@
 name: jax
 channels:
-  - nvidia
   - conda-forge
   - defaults
 dependencies:
@@ -12,6 +11,6 @@ dependencies:
   - matplotlib
   - seaborn
   - pytest
-  - cudatoolkit=11.8
-  - cuda-nvcc=11.8
   - tqdm
+  - ipython
+  - ase

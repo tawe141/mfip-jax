@@ -8,7 +8,7 @@ from typing import Callable
 @jit
 def rbf(x1: jnp.ndarray, x2: jnp.ndarray, l: float) -> float:
     diff = x1 / l - x2 / l
-    sqdist = jnp.sum(diff * diff)
+    sqdist = jnp.sum(jnp.power(diff, 2))
     return jnp.exp(-sqdist)
 
 
@@ -31,15 +31,42 @@ def hvp(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx2: jnp.array, *
     return vmap(grad_kernel_vp, in_axes=(None, None, 1), out_axes=1)(x1, x2, dx2)[1]
 
 
+def get_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.array, **kernel_kwargs) -> jnp.ndarray:
+    return dx1.T @ hvp(kernel_fn, x1, x2, dx2, **kernel_kwargs)
+
+
+def get_full_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.array, **kernel_kwargs) -> jnp.ndarray:
+    # kernel_kwargs['kernel_fn'] = kernel_fn
+    K_partial = partial(get_K, **kernel_kwargs)
+    func = vmap(
+        vmap(K_partial, in_axes=(None, None, 0, None, 0), out_axes=0),
+        in_axes=(None, 0, None, 0, None),
+        out_axes=0
+    )
+    # return func(x1=x1, x2=x2, dx1=dx1, dx2=dx2)
+    return func(kernel_fn, x1, x2, dx1, dx2)
+
+
+@partial(jit, static_argnames=['kernel_fn'])
+def reordered_hvp(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx2: jnp.array, **kernel_kwargs):
+    # grad, multiply, then grad again
+    kernel_partial = partial(kernel_fn, **kernel_kwargs)
+    def grad_kernel_vp(x1, x2, dx2):
+        gradx1 = lambda x2: grad(kernel_partial)(x1, x2) @ dx2  # should grad use argnums?
+        return grad(gradx1)(x2)
+    return vmap(grad_kernel_vp, in_axes=(None, None, 1), out_axes=1)(x1, x2, dx2)
+
+
 if __name__ == "__main__":
+    n = 512
     key = jax.random.PRNGKey(42)
-    a = jax.random.normal(key, shape=(16,))
+    a = jax.random.normal(key, shape=(n,))
     res = explicit_hess(rbf, a, a, 1.0)
     print(res.shape)
-    print(jnp.allclose(res, 2.0 * jnp.eye(16)))
+    print(jnp.allclose(res, 2.0 * jnp.eye(n)))
 
     # vectorize
-    a = jax.random.normal(key, shape=(4, 16))
+    a = jax.random.normal(key, shape=(4, n))
     v_explicit_hess = jax.vmap(
         jax.vmap(explicit_hess, in_axes=(None, 0, None, None), out_axes=0),
         in_axes=(None, None, 0, None),
@@ -52,10 +79,14 @@ if __name__ == "__main__":
     # how does the hvp work?
     new_key, subkey = jax.random.split(key)
     a = a[0]
-    da = jax.random.normal(new_key, shape=(16, 8))  # pretend this is the jacobian of `a`
-    hvp_res = hvp(rbf, a, a, da, l=1.0)[1]
+    da = jax.random.normal(new_key, shape=(n, 8))  # pretend this is the jacobian of `a`
+    hvp_res = hvp(rbf, a, a, da, l=1.0)
     print(hvp_res.shape)
     print(jnp.allclose(res @ da, hvp_res))
+
+    reordered_res = reordered_hvp(rbf, a, a, da, l=1.0)
+    print(reordered_res.shape)
+    print(jnp.allclose(hvp_res, reordered_res))
 
     # performance comparison, done with the %timeit magic in ipython
     # %timeit (explicit_hess(rbf, a, a, 1.0) @ da).block_until_ready()
