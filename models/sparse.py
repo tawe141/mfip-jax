@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 from utils.safe_cholesky import safe_cholesky
-from jax.scipy.linalg import solve, solve_triangular
+from jax.scipy.linalg import solve_triangular
 from kernels.hess import get_full_K
 
 
@@ -18,9 +18,9 @@ def neg_elbo(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, train_y, sig
     A = solve_triangular(L, K_mn, lower=True) / sigma_y
     B = A @ A.T + jnp.eye(len(A))
     L_B = safe_cholesky(B)
-    c = solve_triangular(L_B, A, lower=True) @ train_y / sigma_y   # solve_triangular(L_B, A @ y) could be more efficient
+    c = solve_triangular(L_B, A.dot(train_y), lower=True) / sigma_y   # solve_triangular(L_B, A @ y) could be more efficient
 
-    logdet_B = 2 * jnp.trace(L_B)
+    logdet_B = 2 * jnp.sum(jnp.log(jnp.diag(L_B)))
 
     # super naive interpretation. could definitely be optimized, for example by only computing 
     # the diagonal terms of the trace of matrices
@@ -33,3 +33,9 @@ def neg_elbo(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, train_y, sig
     elbo += 0.5 * jnp.trace(A @ A.T)
 
     return -elbo
+
+
+def neg_elbo_from_coords(descriptor_fn, kernel_fn, train_coords, inducing_coords, train_y, sigma_y, **kernel_kwargs):
+    train_x, train_dx = descriptor_fn(train_coords)
+    inducing_x, inducing_dx = descriptor_fn(inducing_coords)
+    return neg_elbo(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, train_y, sigma_y, **kernel_kwargs)

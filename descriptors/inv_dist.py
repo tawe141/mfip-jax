@@ -27,5 +27,7 @@ def inv_dist(pos: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
     Returns:
         Tuple[jnp.ndarray, jnp.ndarray]: arrays of shape (N(N-1)/2, ) and (N(N-1)/2, N, 3), the descriptor and its Jacobian wrt positions, respectively
     """
-    jac_inv_dist = jacfwd(_inv_dist)  # is jacfwd faster or jacrev?
-    return _inv_dist(pos), jac_inv_dist(pos)
+    jac_inv_dist = jacfwd(_inv_dist)(pos)  # is jacfwd faster or jacrev?
+    # flatten the last two dimensions of jac_inv_dist
+    jac_inv_dist = jac_inv_dist.reshape(len(jac_inv_dist), -1)
+    return _inv_dist(pos), jac_inv_dist

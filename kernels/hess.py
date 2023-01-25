@@ -67,6 +67,12 @@ def reordered_hvp(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx2: jn
     return vmap(grad_kernel_vp, in_axes=(None, None, 1), out_axes=1)(x1, x2, dx2)
 
 
+def get_hess_K_from_coords(descriptor_fn, kernel_fn, coords1, coords2, **kernel_kwargs):
+    x1, dx1 = descriptor_fn(coords1)
+    x2, dx2 = descriptor_fn(coords2)
+    return get_full_K(kernel_fn, x1, x2, dx1, dx2, **kernel_kwargs)
+
+
 if __name__ == "__main__":
     n = 512
     key = jax.random.PRNGKey(42)
