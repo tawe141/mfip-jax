@@ -23,27 +23,18 @@ def flatten(x: jnp.ndarray, m1: int, d1: int, m2: int, d2: int):
 
 
 def gp_predict(test_x: jnp.ndarray, test_dx: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs):
-    m1, d1, f1 = train_dx.shape
-    m2, d2, f2 = test_dx.shape
-    K_train = flatten(
-        get_full_K(kernel_fn, train_x, train_x, train_dx, train_dx, **kernel_kwargs),
-        m1, f1, m1, f1
-    )
+    # m1, d1, f1 = train_dx.shape
+    # m2, d2, f2 = test_dx.shape
+    K_train = get_full_K(kernel_fn, train_x, train_x, train_dx, train_dx, **kernel_kwargs)
     jitter = 1e-8 * jnp.eye(len(K_train))
     alpha = solve(K_train + jitter, train_y, assume_a='pos')
-    K_test = flatten(
-        get_full_K(kernel_fn, test_x, train_x, test_dx, train_dx, **kernel_kwargs),
-        m1, f1, m2, f2
-    )
+    K_test = get_full_K(kernel_fn, test_x, train_x, test_dx, train_dx, **kernel_kwargs)
 
     mu = K_test @ alpha
 
     # uncertainties
 
-    K_test_test = flatten(
-        get_full_K(kernel_fn, test_x, test_x, test_dx, test_dx, **kernel_kwargs),
-        m2, f2, m2, f2
-    )
+    K_test_test = get_full_K(kernel_fn, test_x, test_x, test_dx, test_dx, **kernel_kwargs)
     var = jnp.diag(K_test_test - K_test.T @ solve(K_train + jitter, K_test, assume_a='pos'))
 
     return mu, var

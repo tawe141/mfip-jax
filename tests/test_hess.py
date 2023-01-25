@@ -1,4 +1,6 @@
-from kernels.hess import *
+from kernels.hess import rbf, explicit_hess, _get_full_K, get_K, hvp
+from jax import vmap
+from functools import partial
 import jax 
 import jax.numpy as jnp
 import pytest
@@ -56,7 +58,7 @@ def test_batched_K(random_batch):
     res = batch_over_x1x2(rbf, random_batch, random_batch, dx, dx)
     assert res.shape == (4, 4, 8, 8)
 
-    assert jnp.allclose(get_full_K(rbf, random_batch, random_batch, dx, dx, l=1.0), res)
+    assert jnp.allclose(_get_full_K(rbf, random_batch, random_batch, dx, dx, l=1.0), res)
 
 
 # def test_batch_hvp(random_batch):

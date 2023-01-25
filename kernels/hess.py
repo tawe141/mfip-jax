@@ -5,6 +5,10 @@ import jax.numpy as jnp
 from typing import Callable
 
 
+def flatten(x: jnp.ndarray, m1: int, d1: int, m2: int, d2: int):
+    return x.transpose(0,2,1,3).reshape(m1*d1, m2*d2)
+
+
 @jit
 def rbf(x1: jnp.ndarray, x2: jnp.ndarray, l: float) -> float:
     diff = x1 / l - x2 / l
@@ -35,7 +39,7 @@ def get_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarra
     return dx1.T @ hvp(kernel_fn, x1, x2, dx2, **kernel_kwargs)
 
 
-def get_full_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.array, **kernel_kwargs) -> jnp.ndarray:
+def _get_full_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.array, **kernel_kwargs) -> jnp.ndarray:
     # kernel_kwargs['kernel_fn'] = kernel_fn
     K_partial = partial(get_K, **kernel_kwargs)
     func = vmap(
@@ -45,6 +49,12 @@ def get_full_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.n
     )
     # return func(x1=x1, x2=x2, dx1=dx1, dx2=dx2)
     return func(kernel_fn, x1, x2, dx1, dx2)
+
+
+def get_full_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.array, **kernel_kwargs) -> jnp.ndarray:
+    K = _get_full_K(kernel_fn, x1, x2, dx1, dx2, **kernel_kwargs)
+    m1, m2, d1, d2 = K.shape
+    return flatten(K, m1, d1, m2, d2)
 
 
 @partial(jit, static_argnames=['kernel_fn'])
