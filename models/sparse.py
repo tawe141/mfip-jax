@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 from utils.safe_cholesky import safe_cholesky
-from jax.scipy.linalg import solve_triangular
+from jax.scipy.linalg import solve, solve_triangular
 from kernels.hess import get_full_K
 
 
@@ -39,3 +39,27 @@ def neg_elbo_from_coords(descriptor_fn, kernel_fn, train_coords, inducing_coords
     train_x, train_dx = descriptor_fn(train_coords)
     inducing_x, inducing_dx = descriptor_fn(inducing_coords)
     return neg_elbo(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, train_y, sigma_y, **kernel_kwargs)
+
+
+def variational_posterior(descriptor_fn, kernel_fn, test_coords, train_coords, inducing_coords, train_y, sigma_y, **kernel_kwargs):
+    test_x, test_dx = descriptor_fn(test_coords)
+    train_x, train_dx = descriptor_fn(train_coords)
+    inducing_x, inducing_dx = descriptor_fn(inducing_coords)
+    K_mm = get_full_K(kernel_fn, inducing_x, inducing_x, inducing_dx, inducing_dx, **kernel_kwargs)
+    K_mn = get_full_K(kernel_fn, inducing_x, train_x, inducing_dx, train_dx, **kernel_kwargs)
+
+    jitter = 1e-8 * jnp.eye(len(K_mm))
+
+    sig_inv = K_mm + (K_mn @ K_mn.T + jitter) / sigma_y**2 + jitter
+    mu_m = K_mm @ solve(sig_inv, K_mn.dot(train_y), assume_a='pos') / sigma_y**2
+    A_m = K_mm @ solve(sig_inv, K_mm, assume_a='pos')
+
+    K_test = get_full_K(kernel_fn, test_x, test_x, test_dx, test_dx, **kernel_kwargs)
+    K_test_m = get_full_K(kernel_fn, test_x, inducing_x, test_dx, inducing_dx, **kernel_kwargs)
+
+    # jitter = 1e-8 * jnp.eye(len(K_mm))
+    mu = K_test_m @ solve(K_mm + jitter, mu_m, assume_a='pos')
+    K_mm_inv_K_m_test = solve(K_mm + jitter, K_test_m.T, assume_a='pos')
+    cov = K_test - K_test_m @ K_mm_inv_K_m_test + K_test_m @ solve(K_mm + jitter, A_m @ K_mm_inv_K_m_test, assume_a='pos')
+
+    return mu, cov
