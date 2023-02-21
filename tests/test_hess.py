@@ -1,5 +1,5 @@
-from kernels.hess import rbf, explicit_hess, _get_full_K, get_K, hvp
-from jax import vmap
+from kernels.hess import rbf, explicit_hess, _get_full_K, _get_full_K_iterative, get_K, hvp, bilinear_hess, get_diag_K, get_full_K
+from jax import vmap, jvp, vjp
 from functools import partial
 import jax 
 import jax.numpy as jnp
@@ -59,6 +59,59 @@ def test_batched_K(random_batch):
     assert res.shape == (4, 4, 8, 8)
 
     assert jnp.allclose(_get_full_K(rbf, random_batch, random_batch, dx, dx, l=1.0), res)
+
+
+def test_diag_K(random_vec):
+    # single vector in a batch
+    a = jnp.expand_dims(random_vec, 0)
+    key = jax.random.PRNGKey(41)
+    da = jax.random.normal(key, shape=(1, 16, 8))
+    K_diag = get_diag_K(rbf, a, a, da, da, l=1.0)
+    K = get_full_K(rbf, a, a, da, da, l=1.0)
+
+    assert jnp.allclose(K_diag, jnp.diagonal(K))
+
+    # multiple vectors in a batch
+    key = jax.random.PRNGKey(11)
+    a = jax.random.normal(key, (4, 16))
+    da = jax.random.normal(key, (4, 16, 8))
+    K_diag = get_diag_K(rbf, a, a, da, da, l=1.0)
+    K = get_full_K(rbf, a, a, da, da, l=1.0)
+
+    assert jnp.allclose(K_diag, jnp.diagonal(K))
+
+
+
+def test_bilinear_hess(random_vec):
+    a = random_vec
+    # assume there is some map from R^16 to R^8
+    key = jax.random.PRNGKey(11)
+    da = jax.random.normal(key, shape=(16, 8))
+    _, new_key = jax.random.split(key)
+    b = jax.random.normal(new_key, shape=(16,))
+    _, new_key = jax.random.split(new_key)
+    db = jax.random.normal(new_key, shape=(16, 8))
+
+    # x1=x2, dx1=dx2
+    res = bilinear_hess(rbf, a, a, da, da, l=1.0)
+    assert jnp.allclose(res, da.T @ (2*jnp.eye(16)) @ da)
+
+    # x1!=x2
+    res = bilinear_hess(rbf, a, b, da, db, l=1.0)
+    H = explicit_hess(rbf, a, b, 1.0)
+    assert jnp.allclose(res, da.T @ H @ db)
+
+
+def test_iterative_K(random_batch):
+    a = random_batch
+    key = jax.random.PRNGKey(11)
+    da = jax.random.normal(key, shape=(4, 16, 8))
+
+    K = _get_full_K(rbf, a, a, da, da, l=1.0)
+    iter_K = _get_full_K_iterative(rbf, a, a, da, da, l=1.0)
+
+    assert jnp.allclose(K, iter_K)
+
 
 
 # def test_batch_hvp(random_batch):

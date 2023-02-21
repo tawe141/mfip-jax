@@ -1,6 +1,6 @@
 from functools import partial
 import jax
-from jax import jacfwd, grad, jvp, vmap, jit
+from jax import jacfwd, grad, jvp, vjp, vmap, jit
 import jax.numpy as jnp
 from typing import Callable
 
@@ -10,10 +10,32 @@ def flatten(x: jnp.ndarray, m1: int, d1: int, m2: int, d2: int):
 
 
 @jit
+# @jax.checkpoint
 def rbf(x1: jnp.ndarray, x2: jnp.ndarray, l: float) -> float:
     diff = x1 / l - x2 / l
     sqdist = jnp.sum(jnp.power(diff, 2))
+    # sqdist = jnp.sum(diff * diff)
     return jnp.exp(-sqdist)
+
+
+# def kernel_with_descriptor(descriptor_fn, kernel_fn, x1, x2, **kernel_kwargs):
+#     x1_ = descriptor_fn(x1)
+#     x2_ = descriptor_fn(x2)
+#     return kernel_fn(x1_, x2_, kernel_kwargs)
+
+
+def bilinear_hess(kernel_fn, x1, x2, dx1, dx2, **kernel_kwargs):
+    def jac_x2_vec_dot(kernel_fn, x1, x2, dx2, **kernel_kwargs):
+        # finds the jacobian wrt x2 and applies linear map according to dx2
+        partial_kernel = partial(kernel_fn, x1, **kernel_kwargs)
+        jvp_col = lambda a: jvp(partial_kernel, (x2, ), (a, ))[1]
+        jvp_columnwise = vmap(jvp_col, in_axes=1)
+        return jvp_columnwise(dx2)
+
+    partial_jac = partial(jac_x2_vec_dot, kernel_fn, x2=x2, dx2=dx2, **kernel_kwargs)
+    jvp_col = lambda a: jvp(partial_jac, (x1, ), (a, ))[1]
+    jvp_columnwise = vmap(jvp_col, in_axes=1)
+    return jvp_columnwise(dx1)
 
 
 def explicit_hess_fn(kernel_fn: Callable) -> Callable:
@@ -27,7 +49,7 @@ def explicit_hess(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, l: floa
 
 
 @partial(jit, static_argnames=['kernel_fn'])
-def hvp(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx2: jnp.array, **kernel_kwargs) -> jnp.ndarray:
+def hvp(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx2: jnp.ndarray, **kernel_kwargs) -> jnp.ndarray:
     kernel_partial = partial(kernel_fn, **kernel_kwargs)
     def grad_kernel_vp(x1, x2, dx2):
         gradx1 = lambda x2: grad(kernel_partial)(x1, x2)  # should grad use argnums?
@@ -35,8 +57,19 @@ def hvp(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx2: jnp.array, *
     return vmap(grad_kernel_vp, in_axes=(None, None, 1), out_axes=1)(x1, x2, dx2)[1]
 
 
+# def hvp_from_jvps(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.ndarray, **kernel_kwargs) -> jnp.ndarray:
+#     kernel_partial = partial(kernel_fn, **kernel_kwargs)
+#     def grad_kernel_vp(x1, x2, dx2):
+#         kernel_x2 = partial(kernel_partial, x1=x1)
+#         return jvp(kernel_x2, (x2, ), (dx2, ))[1]
+#     partial_grad_kernel_vp = partial(grad_kernel_vp, x2=x2, dx2=dx2)
+#     dx1_hess = vjp(partial_grad_kernel_vp, x1, x2, dx2)(dx1)
+#     return dx1_hess
+
+
 def get_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.array, **kernel_kwargs) -> jnp.ndarray:
-    return dx1.T @ hvp(kernel_fn, x1, x2, dx2, **kernel_kwargs)
+    # return dx1.T @ hvp(kernel_fn, x1, x2, dx2, **kernel_kwargs)
+    return bilinear_hess(kernel_fn, x1, x2, dx1, dx2, **kernel_kwargs)
 
 
 def _get_full_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.array, **kernel_kwargs) -> jnp.ndarray:
@@ -51,8 +84,39 @@ def _get_full_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.
     return func(kernel_fn, x1, x2, dx1, dx2)
 
 
+def _get_full_K_iterative(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.array, **kernel_kwargs) -> jnp.ndarray:
+    """
+    Getting the full kernel matrix can be brutally memory intensive. Iterate over x1/dx1 and build the matrix row-by-row
+    """
+    K_partial = partial(get_K, **kernel_kwargs)
+    vec_over_x2 = vmap(K_partial, in_axes=(None, None, 0, None, 0), out_axes=0)
+    def calc_row(i, val):
+        val = val.at[i].set(vec_over_x2(kernel_fn, x1[i], x2, dx1[i], dx2))
+        return val
+    init_val = jnp.zeros((len(x1), len(x2), dx1.shape[-1], dx2.shape[-1]))
+    return jax.lax.fori_loop(0, len(x1), calc_row, init_val)
+
+
+def get_diag_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.array, **kernel_kwargs) -> jnp.ndarray:
+    """
+    Calculates the diagonal of the Hessian matrix for batched x1 and x2
+    NOTE: this function works by getting the diagonal of `get_K`, but it's more efficient to have `get_K` get the diagonal directly
+    so it computes a single vector rather than take a diagonal of the cov matrix.
+    """
+    K_partial = partial(get_K, **kernel_kwargs)
+    diag_fn = lambda k,a1,a2,da1,da2: jnp.diagonal(K_partial(k, a1, a2, da1, da2))
+    func = vmap(diag_fn, in_axes=(None, 0, 0, 0, 0), out_axes=0)
+    return func(kernel_fn, x1, x2, dx1, dx2).flatten()
+
+
 def get_full_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.array, **kernel_kwargs) -> jnp.ndarray:
     K = _get_full_K(kernel_fn, x1, x2, dx1, dx2, **kernel_kwargs)
+    m1, m2, d1, d2 = K.shape
+    return flatten(K, m1, d1, m2, d2)
+
+
+def get_full_K_iterative(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.array, **kernel_kwargs) -> jnp.ndarray:
+    K = _get_full_K_iterative(kernel_fn, x1, x2, dx1, dx2, **kernel_kwargs)
     m1, m2, d1, d2 = K.shape
     return flatten(K, m1, d1, m2, d2)
 
@@ -78,6 +142,7 @@ if __name__ == "__main__":
     key = jax.random.PRNGKey(42)
     a = jax.random.normal(key, shape=(n,))
     res = explicit_hess(rbf, a, a, 1.0)
+    res.block_until_ready()
     print(res.shape)
     print(jnp.allclose(res, 2.0 * jnp.eye(n)))
 
@@ -89,6 +154,7 @@ if __name__ == "__main__":
         out_axes=1
     )
     vres = v_explicit_hess(rbf, a, a, 1.0)
+    vres.block_until_ready()
     print(vres.shape)
     print(jnp.allclose(vres[0, 0], res))
     
@@ -97,12 +163,21 @@ if __name__ == "__main__":
     a = a[0]
     da = jax.random.normal(new_key, shape=(n, 8))  # pretend this is the jacobian of `a`
     hvp_res = hvp(rbf, a, a, da, l=1.0)
+    hvp_res.block_until_ready()
     print(hvp_res.shape)
     print(jnp.allclose(res @ da, hvp_res))
 
     reordered_res = reordered_hvp(rbf, a, a, da, l=1.0)
+    reordered_res.block_until_ready()
     print(reordered_res.shape)
     print(jnp.allclose(hvp_res, reordered_res))
+
+    # hessian matrix from jvp and vjp
+    hess_from_jvps = hvp_from_jvps(rbf, a, a, da, da, l=1.0)
+    print(jnp.allclose(res, hess_from_jvps))
+
+
+    # jax.profiler.save_device_memory_profile('memory.prof')
 
     # performance comparison, done with the %timeit magic in ipython
     # %timeit (explicit_hess(rbf, a, a, 1.0) @ da).block_until_ready()

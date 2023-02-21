@@ -2,9 +2,11 @@ import jax.numpy as jnp
 from jax import grad, jit
 from utils.safe_cholesky import safe_cholesky
 from jax.scipy.linalg import solve, solve_triangular, cho_solve
-from kernels.hess import get_full_K
+from kernels.hess import get_full_K, get_diag_K, get_full_K_iterative
+from functools import partial
 import tqdm
 import optax
+# from memory_profiler import profile
 
 
 def neg_elbo(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, train_y, sigma_y, **kernel_kwargs):
@@ -16,11 +18,13 @@ def neg_elbo(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, train_y, sig
 
     # hard-coded jitter matrix...
     jitter_mm = 1e-8 * jnp.eye(len(K_mm))
-    L = safe_cholesky(K_mm + jitter_mm)
+    # L = safe_cholesky(K_mm + jitter_mm)
+    L = jnp.linalg.cholesky(K_mm + jitter_mm)
 
     A = solve_triangular(L, K_mn, lower=True) / sigma_y
     B = A @ A.T + jnp.eye(len(A))
-    L_B = safe_cholesky(B)
+    # L_B = safe_cholesky(B)
+    L_B = jnp.linalg.cholesky(B)
     c = solve_triangular(L_B, A.dot(train_y), lower=True) / sigma_y
 
     logdet_B = 2 * jnp.sum(jnp.log(jnp.diag(L_B)))
@@ -44,14 +48,16 @@ def neg_elbo_from_coords(descriptor_fn, kernel_fn, train_coords, inducing_coords
     return neg_elbo(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, train_y, sigma_y, **kernel_kwargs)
 
 
+# @profile
+@partial(jit, static_argnames=['descriptor_fn', 'kernel_fn'])
 def variational_posterior(descriptor_fn, kernel_fn, test_coords, train_coords, inducing_coords, train_y, sigma_y, **kernel_kwargs):
     test_x, test_dx = descriptor_fn(test_coords)
     train_x, train_dx = descriptor_fn(train_coords)
     inducing_x, inducing_dx = descriptor_fn(inducing_coords)
     K_mm = get_full_K(kernel_fn, inducing_x, inducing_x, inducing_dx, inducing_dx, **kernel_kwargs)
-    K_mn = get_full_K(kernel_fn, inducing_x, train_x, inducing_dx, train_dx, **kernel_kwargs)
-    K_test_m = get_full_K(kernel_fn, test_x, inducing_x, test_dx, inducing_dx, **kernel_kwargs)
-    K_test = get_full_K(kernel_fn, test_x, test_x, test_dx, test_dx, **kernel_kwargs)
+    K_mn = get_full_K_iterative(kernel_fn, inducing_x, train_x, inducing_dx, train_dx, **kernel_kwargs)
+    K_test_m = get_full_K_iterative(kernel_fn, inducing_x, test_x, inducing_dx, test_dx, **kernel_kwargs).T
+    K_test_diag = get_diag_K(kernel_fn, test_x, test_x, test_dx, test_dx, **kernel_kwargs)
 
     jitter = 1e-8 * jnp.eye(len(K_mm))
 
@@ -59,11 +65,13 @@ def variational_posterior(descriptor_fn, kernel_fn, test_coords, train_coords, i
     # this way, this function will truly scale with O(nm^2) rather than O(m^3) as it stands now
     # not useful for training, but will be useful for predictions
 
-    L = safe_cholesky(K_mm + jitter)
+    # L = safe_cholesky(K_mm + jitter)
+    L = jnp.linalg.cholesky(K_mm + jitter)
 
     A = solve_triangular(L, K_mn, lower=True) / sigma_y
     B = A @ A.T + jnp.eye(len(A))
-    L_B = safe_cholesky(B)
+    # L_B = safe_cholesky(B)
+    L_B = jnp.linalg.cholesky(B)
     c = solve_triangular(L_B, A.dot(train_y), lower=True) / sigma_y
 
     mu = K_test_m @ solve_triangular(
@@ -71,8 +79,9 @@ def variational_posterior(descriptor_fn, kernel_fn, test_coords, train_coords, i
     )
 
     L_inv_K_m_test = solve_triangular(L, K_test_m.T, lower=True)
-    cov = K_test - K_test_m @ solve_triangular(L.T, (L_inv_K_m_test - cho_solve((L_B, True), L_inv_K_m_test)))
-
+    var = K_test_diag - jnp.diagonal(
+        K_test_m @ solve_triangular(L.T, (L_inv_K_m_test - cho_solve((L_B, True), L_inv_K_m_test)))
+    )
 
     # sig_inv = K_mm + (K_mn @ K_mn.T) / sigma_y**2 + (1e-5 * jnp.eye(len(K_mm)))
     # mu_m = K_mm @ solve(sig_inv, K_mn.dot(train_y), assume_a='pos') / sigma_y**2
@@ -86,7 +95,36 @@ def variational_posterior(descriptor_fn, kernel_fn, test_coords, train_coords, i
     # K_mm_inv_K_m_test = solve(K_mm + jitter, K_test_m.T, assume_a='pos')
     # cov = K_test - K_test_m @ K_mm_inv_K_m_test + K_test_m @ solve(K_mm + jitter, A_m @ K_mm_inv_K_m_test, assume_a='pos')
 
-    return mu, cov
+    return mu, var
+
+
+# @profile
+# def variational_posterior(descriptor_fn, kernel_fn, test_coords, train_coords, inducing_coords, train_y, sigma_y, **kernel_kwargs):
+#     test_x, test_dx = descriptor_fn(test_coords)
+#     train_x, train_dx = descriptor_fn(train_coords)
+#     inducing_x, inducing_dx = descriptor_fn(inducing_coords)
+#     K_mm = get_full_K(kernel_fn, inducing_x, inducing_x, inducing_dx, inducing_dx, **kernel_kwargs)
+#     K_mn = get_full_K(kernel_fn, inducing_x, train_x, inducing_dx, train_dx, **kernel_kwargs)
+#     K_test_m = get_full_K(kernel_fn, test_x, inducing_x, test_dx, inducing_dx, **kernel_kwargs)
+#     K_test = get_full_K(kernel_fn, test_x, test_x, test_dx, test_dx, **kernel_kwargs)
+
+#     jitter = 1e-8 * jnp.eye(len(K_mm)) 
+#     L = jnp.linalg.cholesky(K_mm + jitter)
+#     A = solve_triangular(L, K_mn, lower=True) / sigma_y
+#     B = jnp.eye(len(K_mm)) + A @ A.T
+#     L_B = jnp.linalg.cholesky(B)
+
+#     beta = solve_triangular(L_B, A @ train_y * sigma_y, lower=True)
+#     beta = solve_triangular(L.T, beta, lower=False)
+#     mu = K_test_m @ beta / sigma_y**2
+
+#     C = solve_triangular(L, K_test_m.T, lower=True)
+#     D = solve_triangular(L_B, C, lower=True)
+
+#     cov = K_test + sigma_y**2 * jnp.eye(len(K_test)) - C.T @ C + D.T @ D
+
+#     return mu, cov
+
 
 
 def optimize_variational_params(

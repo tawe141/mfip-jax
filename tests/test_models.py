@@ -55,11 +55,11 @@ def test_variatonal_elbo(benzene_with_descriptor, benzene_coords):
 def test_variational_posterior(benzene_coords):
     pos, F = benzene_coords
     train_y = F.flatten()
-    mu, cov = variational_posterior(vmap(inv_dist), rbf, pos, pos, pos, train_y, 0.001, l=1.0)
+    mu, var = variational_posterior(vmap(inv_dist), rbf, pos, pos, pos, train_y, 0.001, l=1.0)
 
     # assert jnp.allclose(mu, train_y)    # covariance works but not the means... not sure why
     # means are only 1e-2 off, which is probably ok
-    assert jnp.allclose(jnp.diag(cov), 0.0, atol=1e-5)
+    assert jnp.allclose(var, 0.0, atol=1e-5)
 
 
 def test_optimizing_variational(benzene_coords):
@@ -83,6 +83,7 @@ def test_optimizing_variational(benzene_coords):
 
     assert new_neg_elbo < initial_neg_elbo
     assert not jnp.allclose(new_params['inducing_coords'], inducing_pos)
+    assert not jnp.allclose(new_params['l'], 1.0)
 
 # def test_grad_variational_elbo(benzene_coords):
 #     # gradient of the elbo when inducing points is the same as the training set
