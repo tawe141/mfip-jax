@@ -1,6 +1,6 @@
 from functools import partial
 import jax
-from jax import jacfwd, grad, jvp, vjp, vmap, jit
+from jax import jacfwd, grad, jvp, vjp, vmap, jit, pmap
 import jax.numpy as jnp
 from typing import Callable
 
@@ -76,6 +76,18 @@ def _get_full_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.
     # kernel_kwargs['kernel_fn'] = kernel_fn
     K_partial = partial(get_K, **kernel_kwargs)
     func = vmap(
+        vmap(K_partial, in_axes=(None, None, 0, None, 0), out_axes=0),
+        in_axes=(None, 0, None, 0, None),
+        out_axes=0
+    )
+    # return func(x1=x1, x2=x2, dx1=dx1, dx2=dx2)
+    return func(kernel_fn, x1, x2, dx1, dx2)
+
+
+def _get_full_K_pmap(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.array, **kernel_kwargs) -> jnp.ndarray:
+    # kernel_kwargs['kernel_fn'] = kernel_fn
+    K_partial = partial(get_K, **kernel_kwargs)
+    func = pmap(
         vmap(K_partial, in_axes=(None, None, 0, None, 0), out_axes=0),
         in_axes=(None, 0, None, 0, None),
         out_axes=0
