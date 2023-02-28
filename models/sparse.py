@@ -4,14 +4,17 @@ from utils.safe_cholesky import safe_cholesky
 from jax.scipy.linalg import solve, solve_triangular, cho_solve
 from kernels.hess import get_full_K, get_diag_K, get_full_K_iterative
 from functools import partial
+import pdb
 import tqdm
 import optax
+import jaxopt
 # from memory_profiler import profile
 
 
-@profile
+# @profile
 def neg_elbo(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, train_y, sigma_y, **kernel_kwargs):
     n = len(train_x)
+    output_dims = train_dx.shape[-1]
 
     K_nn_trace = jnp.sum(get_diag_K(kernel_fn, train_x, train_x, train_dx, train_dx, **kernel_kwargs))
     K_mn = get_full_K_iterative(kernel_fn, inducing_x, train_x, inducing_dx, train_dx, **kernel_kwargs)
@@ -32,15 +35,15 @@ def neg_elbo(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, train_y, sig
 
     # super naive interpretation. could definitely be optimized, for example by only computing 
     # the diagonal terms of the trace of matrices
-    elbo = -0.5 * n * jnp.log(2*jnp.pi)
-    elbo -= 0.5 * logdet_B
-    elbo -= 0.5 * n * jnp.log(sigma_y**2)
-    elbo -= 0.5 / sigma_y**2 * jnp.dot(train_y, train_y)
-    elbo += 0.5 * jnp.dot(c, c)
-    elbo -= 0.5 / sigma_y**2 * K_nn_trace  #* jnp.trace(K_nn)
-    elbo += 0.5 * jnp.sum(jnp.square(A))  #jnp.trace(A @ A.T)
+    elbo = -0.5 * n * jnp.log(2*jnp.pi) * output_dims
+    elbo -= 0.5 * logdet_B * output_dims
+    elbo -= 0.5 * n * jnp.log(sigma_y**2) * output_dims
+    elbo -= 0.5 / sigma_y**2 * jnp.sum(jnp.square(train_y))  # jnp.dot(train_y, train_y)
+    elbo += 0.5 * jnp.sum(jnp.square(c))  # jnp.dot(c, c)
+    elbo -= 0.5 / sigma_y**2 * output_dims * K_nn_trace  #* jnp.trace(K_nn)
+    elbo += 0.5 * output_dims * jnp.sum(jnp.square(A))  #jnp.trace(A @ A.T)
 
-    return -elbo
+    return -elbo / n
 
 
 def neg_elbo_from_coords(descriptor_fn, kernel_fn, train_coords, inducing_coords, train_y, sigma_y, **kernel_kwargs):
@@ -49,11 +52,14 @@ def neg_elbo_from_coords(descriptor_fn, kernel_fn, train_coords, inducing_coords
     return neg_elbo(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, train_y, sigma_y, **kernel_kwargs)
 
 
+def _normalize(x, mu, std):
+    return (x - mu.reshape(1, -1)) / std.reshape(1, -1)
+
 # @profile
 # @partial(jit, static_argnames=['descriptor_fn', 'kernel_fn'])
 def variational_posterior(descriptor_fn, kernel_fn, test_coords, train_coords, inducing_coords, train_y, sigma_y, **kernel_kwargs):
-    test_x, test_dx = descriptor_fn(test_coords)
     train_x, train_dx = descriptor_fn(train_coords)
+    test_x, test_dx = descriptor_fn(test_coords)
     inducing_x, inducing_dx = descriptor_fn(inducing_coords)
     K_mm = get_full_K(kernel_fn, inducing_x, inducing_x, inducing_dx, inducing_dx, **kernel_kwargs)
     K_mn = get_full_K_iterative(kernel_fn, inducing_x, train_x, inducing_dx, train_dx, **kernel_kwargs)
@@ -81,6 +87,7 @@ def variational_posterior(descriptor_fn, kernel_fn, test_coords, train_coords, i
 
     L_inv_K_m_test = solve_triangular(L, K_test_m.T, lower=True)
     LB_inv_L_inv_K_m_test = solve_triangular(L_B, L_inv_K_m_test, lower=True)
+    # var = K_test_diag - jnp.diagonal(
     # var = K_test_diag - jnp.diagonal(
     #     K_test_m @ solve_triangular(L.T, (L_inv_K_m_test - cho_solve((L_B, True), L_inv_K_m_test)))
     # )
@@ -132,45 +139,68 @@ def variational_posterior(descriptor_fn, kernel_fn, test_coords, train_coords, i
 #     return mu, cov
 
 
-# @partial(jit, static_argnames=['descriptor_fn', 'kernel_fn', 'num_iterations'])
+#@partial(jit, static_argnames=['descriptor_fn', 'kernel_fn', 'num_iterations', 'to_optimize'])
 def optimize_variational_params(
     descriptor_fn, 
     kernel_fn, 
     train_coords, 
     train_y, 
-    sigma_y, 
-    init_inducing_coords, 
-    init_kernel_kwargs, 
+    init_params: dict,
+    to_optimize: list,
     optimizer_kwargs,
-    num_iterations: int = 100
+    num_iterations: int = 100,
     ):
-    loss_fn = lambda params: neg_elbo_from_coords(descriptor_fn, kernel_fn, train_coords, train_y=train_y, sigma_y=sigma_y, **params)
-    grad_loss_fn = grad(loss_fn)
+    params = {i: init_params[i] for i in to_optimize}
+    static_params = {i: init_params[i] for i in init_params.keys() if i not in to_optimize}
+    loss_fn = lambda params: neg_elbo_from_coords(descriptor_fn, kernel_fn, train_coords, train_y=train_y, **static_params, **params)
+    
+    #pdb.set_trace()
+    # grad_loss_fn = grad(loss_fn)
     # jit loss and grad loss
     # loss_fn = jit(loss_fn)
     # grad_loss_fn = jit(grad_loss_fn)
     loss_and_grad_fn = jit(value_and_grad(loss_fn))
+    opt = jaxopt.NonlinearCG(loss_and_grad_fn, value_and_grad=True, jit=False)
+    with tqdm.trange(num_iterations) as pbar:
+        for i in pbar:
+            if i == 0:
+                state = opt.init_state(params)
+            params, state = opt.update(params, state)
+            pbar.set_description('neg. ELBO: %.3f; sigma_y: %.3f' % (state.value, params['l']))
+    #params, state = opt.run(params)
+
+    """
     optimizer = optax.adam(**optimizer_kwargs)
-    params = {**init_kernel_kwargs, 'inducing_coords': init_inducing_coords}
+    params = {**init_kernel_kwargs}
+    if optimize_inducing:
+        params['inducing_coords'] = init_inducing_coords
+    #params = init_kernel_kwargs
     opt_state = optimizer.init(params)
+
+    print('Optimizing the following variables: ')
+    print(list(params.keys()))
 
     @jit
     def iteration(parameters, optimizer_state):
         # loss = loss_fn(parameters)
         # grad_loss = grad_loss_fn(parameters)
         loss, grad_loss = loss_and_grad_fn(parameters)
+        # pdb.set_trace()
         updates, opt_state = optimizer.update(grad_loss, optimizer_state)
         new_params = optax.apply_updates(params, updates)
         return loss, opt_state, new_params
 
     with tqdm.trange(num_iterations) as pbar:   # hardcoded number of epochs
         for _ in pbar:  
-            # loss = loss_fn(params)
             # grad_loss = grad_loss_fn(params)
             # updates, opt_state = optimizer.update(grad_loss, opt_state)
             # params = optax.apply_updates(params, updates)
             # pbar.set_description('neg. ELBO: %f' % loss)
             loss, opt_state, params = iteration(params, opt_state)
+            # l = params['l']
+            # pbar.set_description('neg. ELBO: %f; l = %.3f' % (loss, l))
             pbar.set_description('neg. ELBO: %f' % loss)
 
         return loss, params
+    """
+    return state, params

@@ -12,8 +12,10 @@ def flatten(x: jnp.ndarray, m1: int, d1: int, m2: int, d2: int):
 @jit
 # @jax.checkpoint
 def rbf(x1: jnp.ndarray, x2: jnp.ndarray, l: float) -> float:
-    diff = x1 / l - x2 / l
-    sqdist = jnp.sum(jnp.power(diff, 2))
+    l_ = jax.nn.softplus(l)
+    diff = x1 / l_ - x2 / l_
+    sqdist = jnp.sum(jnp.square(diff))
+    # sqdist = jnp.sum(jnp.power(diff, 2))
     # sqdist = jnp.sum(diff * diff)
     return jnp.exp(-sqdist)
 
