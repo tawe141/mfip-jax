@@ -20,6 +20,11 @@ def rbf(x1: jnp.ndarray, x2: jnp.ndarray, l: float) -> float:
     return jnp.exp(-sqdist)
 
 
+@jit
+def scaled_rbf(x1: jnp.ndarray, x2: jnp.ndarray, l: float, prefactor: float = 1.0) -> float:
+    return prefactor * rbf(x1, x2, l)
+
+
 # def kernel_with_descriptor(descriptor_fn, kernel_fn, x1, x2, **kernel_kwargs):
 #     x1_ = descriptor_fn(x1)
 #     x2_ = descriptor_fn(x2)

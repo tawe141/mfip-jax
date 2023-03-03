@@ -46,6 +46,7 @@ def neg_elbo(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, train_y, sig
     return -elbo / n
 
 
+@partial(jit, static_argnames=['descriptor_fn', 'kernel_fn'])
 def neg_elbo_from_coords(descriptor_fn, kernel_fn, train_coords, inducing_coords, train_y, sigma_y, **kernel_kwargs):
     train_x, train_dx = descriptor_fn(train_coords)
     inducing_x, inducing_dx = descriptor_fn(inducing_coords)
@@ -160,6 +161,7 @@ def optimize_variational_params(
     # loss_fn = jit(loss_fn)
     # grad_loss_fn = jit(grad_loss_fn)
     loss_and_grad_fn = jit(value_and_grad(loss_fn))
+    """
     opt = jaxopt.NonlinearCG(loss_and_grad_fn, value_and_grad=True, jit=False)
     with tqdm.trange(num_iterations) as pbar:
         for i in pbar:
@@ -168,12 +170,12 @@ def optimize_variational_params(
             params, state = opt.update(params, state)
             pbar.set_description('neg. ELBO: %.3f; sigma_y: %.3f' % (state.value, params['l']))
     #params, state = opt.run(params)
-
     """
+    
     optimizer = optax.adam(**optimizer_kwargs)
-    params = {**init_kernel_kwargs}
-    if optimize_inducing:
-        params['inducing_coords'] = init_inducing_coords
+    #params = {**init_kernel_kwargs}
+    #if optimize_inducing:
+    #    params['inducing_coords'] = init_inducing_coords
     #params = init_kernel_kwargs
     opt_state = optimizer.init(params)
 
@@ -185,7 +187,6 @@ def optimize_variational_params(
         # loss = loss_fn(parameters)
         # grad_loss = grad_loss_fn(parameters)
         loss, grad_loss = loss_and_grad_fn(parameters)
-        # pdb.set_trace()
         updates, opt_state = optimizer.update(grad_loss, optimizer_state)
         new_params = optax.apply_updates(params, updates)
         return loss, opt_state, new_params
@@ -202,5 +203,3 @@ def optimize_variational_params(
             pbar.set_description('neg. ELBO: %f' % loss)
 
         return loss, params
-    """
-    return state, params

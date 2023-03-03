@@ -19,7 +19,8 @@ def _inv_dist(pos: jnp.ndarray) -> jnp.ndarray:
     ind1, ind2 = jnp.triu_indices(len(pos), k=1)
     pdiff = pos[ind1] - pos[ind2]  # pairwise difference
     sqdist = jnp.sum(pdiff * pdiff, axis=-1)
-    return 1.0 / sqdist
+    dist = jnp.sqrt(sqdist)
+    return 1.0 / dist
 
 
 def inv_dist(pos: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
