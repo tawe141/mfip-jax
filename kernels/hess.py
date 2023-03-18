@@ -3,6 +3,7 @@ import jax
 from jax import jacfwd, grad, jvp, vjp, vmap, jit, pmap
 import jax.numpy as jnp
 from typing import Callable
+import pdb
 
 
 def flatten(x: jnp.ndarray, m1: int, d1: int, m2: int, d2: int):
@@ -22,8 +23,37 @@ def rbf(x1: jnp.ndarray, x2: jnp.ndarray, l: float) -> float:
 
 @jit
 def scaled_rbf(x1: jnp.ndarray, x2: jnp.ndarray, l: float, prefactor: float = 1.0) -> float:
-    return prefactor * rbf(x1, x2, l)
+    prefactor_ = jax.nn.softplus(prefactor)
+    return prefactor_ * rbf(x1, x2, l)
 
+
+@jit
+def matern12(x1: jnp.ndarray, x2: jnp.ndarray, l: float, prefactor: float = 1.0) -> float:
+    prefactor_ = jax.nn.softplus(prefactor)
+    l_ = jax.nn.softplus(l)
+    diff = x1 / l_ - x2 / l_
+    dist = jnp.sqrt(jnp.sum(jnp.square(diff)))
+    return prefactor_ * jnp.exp(-dist)
+
+
+@jit
+def matern32(x1: jnp.ndarray, x2: jnp.ndarray, l: float, prefactor: float = 1.0) -> float:
+    prefactor_ = jax.nn.softplus(prefactor)
+    l_ = jax.nn.softplus(l)
+    diff = x1 / l_ - x2 / l_
+    dist = jnp.sqrt(jnp.sum(jnp.square(diff)))
+    a = 1 + jnp.sqrt(3.0) * dist
+    return prefactor_ * a * jnp.exp(-jnp.sqrt(3.0) * dist)
+
+
+@jit
+def matern52(x1: jnp.ndarray, x2: jnp.ndarray, l: float, prefactor: float = 1.0) -> float:
+    prefactor_ = jax.nn.softplus(prefactor)
+    l_ = jax.nn.softplus(l)
+    diff = x1 / l_ - x2 / l_
+    dist = jnp.sqrt(jnp.sum(jnp.square(diff)) + 1e-8)  # 1e-8 set here so sqrt returns something non-nan. not sure why this is necessary tbh.
+    a = 1 + jnp.sqrt(5.0) * dist + 5.0 / 3.0 * jnp.square(dist)
+    return prefactor_ * a * jnp.exp(-jnp.sqrt(5) * dist)
 
 # def kernel_with_descriptor(descriptor_fn, kernel_fn, x1, x2, **kernel_kwargs):
 #     x1_ = descriptor_fn(x1)

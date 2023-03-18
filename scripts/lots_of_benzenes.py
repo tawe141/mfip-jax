@@ -5,7 +5,7 @@ Try training a GP with many benzene configurations
 from data.md17 import get_molecules
 from descriptors.inv_dist import inv_dist 
 from models.sparse import optimize_variational_params, variational_posterior, neg_elbo_from_coords
-from kernels.hess import rbf, scaled_rbf
+from kernels.hess import rbf, scaled_rbf, matern12, matern32, matern52
 import jax.numpy as jnp
 from jax import vmap, jit
 import tqdm
@@ -18,13 +18,19 @@ import seaborn as sns
 import pdb
 from jax.config import config
 from functools import partial
+
 config.update("jax_enable_x64", True)
+#config.update("jax_debug_nans", True)
+#config.update("jax_disable_jit", True)
+
+
+KERNEL_FN = matern52
 
 
 @partial(jit, static_argnames=['descriptor_fn', 'kernel_fn'])
 def get_variational_rmse(descriptor_fn, kernel_fn, test_pos, train_pos, inducing_pos, train_F, test_F, sigma_y, **kernel_kwargs):
     train_y = train_F.flatten()
-    mu, var = variational_posterior(descriptor_fn, scaled_rbf, test_pos, train_pos, inducing_pos, train_y, sigma_y, **kernel_kwargs)
+    mu, var = variational_posterior(descriptor_fn, kernel_fn, test_pos, train_pos, inducing_pos, train_y, sigma_y, **kernel_kwargs)
     mu = mu.reshape(test_F.shape)
     mse = jnp.mean((mu - test_F)**2, axis=(-1, -2))
     rmse_overall = jnp.sqrt(jnp.mean(mse))
@@ -32,18 +38,18 @@ def get_variational_rmse(descriptor_fn, kernel_fn, test_pos, train_pos, inducing
     return rmse_overall, rmse_forces
 
 
-atoms, E, F, z = get_molecules('raw/benzene2017_dft.npz', n=1000)
+atoms, E, F, z = get_molecules('raw/benzene2017_dft.npz', n=10000)
 pos = jnp.stack([a.get_positions() for a in atoms], axis=0)
-train_pos, test_pos, train_F, test_F, train_ind, test_ind = train_test_split(pos, F, jnp.arange(len(pos)), test_size=0.5, shuffle=False)
+train_pos, test_pos, train_F, test_F, train_ind, test_ind = train_test_split(pos, F, jnp.arange(len(pos)), test_size=0.9, shuffle=True)
 train_y, test_y = train_F.flatten(), test_F.flatten()
 
-# choose every 10 configurations to be inducing points
-inducing_pos = train_pos[::10]
+# choose every 20 configurations to be inducing points
+inducing_pos = train_pos[::20]
 print('Using %i inducing points' % len(inducing_pos))
 descriptor_fn = jit(vmap(inv_dist))
 
-rmse_train_overall, rmse_train_forces = get_variational_rmse(descriptor_fn, rbf, train_pos, train_pos, inducing_pos, train_F, train_F, 0.01, l=1.0, prefactor=1.0)
-rmse_test_overall, rmse_test_forces = get_variational_rmse(descriptor_fn, rbf, test_pos, train_pos, inducing_pos, train_F, test_F, 0.01, l=1.0, prefactor=1.0)
+rmse_train_overall, rmse_train_forces = get_variational_rmse(descriptor_fn, KERNEL_FN, train_pos, train_pos, inducing_pos, train_F, train_F, 0.01, l=1.0, prefactor=1.0)
+rmse_test_overall, rmse_test_forces = get_variational_rmse(descriptor_fn, KERNEL_FN, test_pos, train_pos, inducing_pos, train_F, test_F, 0.01, l=1.0, prefactor=1.0)
 
 print('Train RMSE: %.3f' % rmse_train_overall)
 print('Test RMSE: %.3f' % rmse_test_overall)
@@ -87,17 +93,20 @@ Scan over a grid of values for sigma and l
 """
 n_l = 10
 n_prefactor = 10
-l_list = jnp.linspace(0.1, 5, n_l)
-prefactor_list = jnp.logspace(0, 2, n_prefactor)
+l_list = jnp.linspace(1.0, 50.0, n_l)
+prefactor_list = jnp.logspace(0, 3, n_prefactor)
 rmse_grid = jnp.zeros((n_l, n_prefactor))
 elbo_grid = jnp.zeros((n_l, n_prefactor))
 
 for i, l in enumerate(l_list):
     for j, prefactor in enumerate(prefactor_list):
-        rmse, _ = get_variational_rmse(descriptor_fn, scaled_rbf, test_pos, train_pos, inducing_pos, train_F, test_F, 1e-4, l=l, prefactor=prefactor)
+        rmse, _ = get_variational_rmse(descriptor_fn, KERNEL_FN, test_pos, train_pos, inducing_pos, train_F, test_F, 1e-4, l=l, prefactor=prefactor)
         rmse_grid = rmse_grid.at[i, j].set(rmse)
-        elbo = neg_elbo_from_coords(descriptor_fn, scaled_rbf, train_pos, inducing_pos, train_y, 1e-4, l=l, prefactor=prefactor)
+        elbo = neg_elbo_from_coords(descriptor_fn, KERNEL_FN, train_pos, inducing_pos, train_y, 1e-4, l=l, prefactor=prefactor)
         elbo_grid = elbo_grid.at[i, j].set(elbo)
+
+prefactor_list = ['%.3f' % i for i in prefactor_list]
+l_list = ['%.3f' % i for i in l_list]
 
 fig, ax = plt.subplots(1, 2, figsize=(16, 8), sharex=True, sharey=True)
 sns.heatmap(rmse_grid, ax=ax[0], xticklabels=prefactor_list, yticklabels=l_list, norm=LogNorm())
@@ -113,7 +122,7 @@ n_atoms = train_pos.shape[1]
 #pdb.set_trace()
 new_neg_elbo, new_params = optimize_variational_params(
     descriptor_fn,
-    scaled_rbf,
+    KERNEL_FN,
     train_pos,
     train_y,
     {

@@ -1,4 +1,4 @@
-from kernels.hess import rbf, explicit_hess, _get_full_K, _get_full_K_iterative, get_K, hvp, bilinear_hess, get_diag_K, get_full_K
+from kernels.hess import rbf, matern52, explicit_hess, _get_full_K, _get_full_K_iterative, get_K, hvp, bilinear_hess, get_diag_K, get_full_K
 from jax import vmap, jvp, vjp
 from functools import partial
 import jax 
@@ -16,6 +16,15 @@ def random_vec():
 def random_batch():
     key = jax.random.PRNGKey(42)
     return jax.random.normal(key, shape=(4, 16))
+
+
+def test_matern52(random_vec, random_batch):
+    cov = matern52(random_vec, random_vec, 1.0)
+    assert jnp.allclose(cov, jax.nn.softplus(1.0))
+
+    vmap_matern = vmap(vmap(matern52, in_axes=(0, None, None), out_axes=0), in_axes=(None, 0, None), out_axes=1)
+    cov = vmap_matern(random_batch, random_batch, 1.0) + 1e-4 * jnp.eye(len(random_batch))
+    assert jnp.all(jnp.linalg.eigvalsh(cov) > 0.0)
 
 
 def test_explicit_hess(random_vec):
