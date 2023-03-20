@@ -74,9 +74,12 @@ def test_optimizing_variational(benzene_coords):
         rbf,
         pos,
         train_y,
-        0.01,
-        inducing_pos,
-        {'l': 1.0},
+        {
+            'l': 1.0,
+            'sigma_y': 0.01,
+            'inducing_coords': inducing_pos
+        },
+        ['l', 'inducing_coords'],
         {'learning_rate': 0.001},
         num_iterations=10
     )

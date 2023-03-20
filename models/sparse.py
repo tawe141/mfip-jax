@@ -56,17 +56,56 @@ def neg_elbo_from_coords(descriptor_fn, kernel_fn, train_coords, inducing_coords
 def _normalize(x, mu, std):
     return (x - mu.reshape(1, -1)) / std.reshape(1, -1)
 
+
+def get_kernel_matrices(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, test_x, test_dx, **kernel_kwargs):
+    """
+    Obtains the needed kernel matrices for variational posterior evaluation
+    """
+    K_mm = get_full_K(kernel_fn, inducing_x, inducing_x, inducing_dx, inducing_dx, **kernel_kwargs)
+    K_mn = get_full_K_iterative(kernel_fn, inducing_x, train_x, inducing_dx, train_dx, **kernel_kwargs)
+    K_test_m = get_full_K_iterative(kernel_fn, inducing_x, test_x, inducing_dx, test_dx, **kernel_kwargs).T
+    K_test_diag = get_diag_K(kernel_fn, test_x, test_x, test_dx, test_dx, **kernel_kwargs)
+
+    return K_mm, K_mn, K_test_m, K_test_diag
+
+
+def vposterior_from_matrices(K_mm, K_mn, K_test_m, K_test_diag, train_y, sigma_y):
+    jitter = 1e-8 * jnp.eye(len(K_mm))
+    
+    L = jnp.linalg.cholesky(K_mm + jitter)
+
+    A = solve_triangular(L, K_mn, lower=True) / sigma_y
+    B = A @ A.T + jnp.eye(len(A))
+    L_B = jnp.linalg.cholesky(B)
+    c = solve_triangular(L_B, A.dot(train_y), lower=True) / sigma_y
+
+    mu = K_test_m @ solve_triangular(
+        L.T, solve_triangular(L_B.T, c, lower=False), lower=False
+    )
+
+    L_inv_K_m_test = solve_triangular(L, K_test_m.T, lower=True)
+    LB_inv_L_inv_K_m_test = solve_triangular(L_B, L_inv_K_m_test, lower=True)
+    var = K_test_diag \
+        + jnp.sum(jnp.square(LB_inv_L_inv_K_m_test), axis=0) \
+            - jnp.sum(jnp.square(L_inv_K_m_test), axis=0)  # square function is known to produce nans
+    
+    return mu, var
+
 # @profile
 # @partial(jit, static_argnames=['descriptor_fn', 'kernel_fn'])
 def variational_posterior(descriptor_fn, kernel_fn, test_coords, train_coords, inducing_coords, train_y, sigma_y, **kernel_kwargs):
     train_x, train_dx = descriptor_fn(train_coords)
     test_x, test_dx = descriptor_fn(test_coords)
     inducing_x, inducing_dx = descriptor_fn(inducing_coords)
+    """
     K_mm = get_full_K(kernel_fn, inducing_x, inducing_x, inducing_dx, inducing_dx, **kernel_kwargs)
     K_mn = get_full_K_iterative(kernel_fn, inducing_x, train_x, inducing_dx, train_dx, **kernel_kwargs)
     K_test_m = get_full_K_iterative(kernel_fn, inducing_x, test_x, inducing_dx, test_dx, **kernel_kwargs).T
     K_test_diag = get_diag_K(kernel_fn, test_x, test_x, test_dx, test_dx, **kernel_kwargs)
+    """
+    K_mm, K_mn, K_test_m, K_test_diag = get_kernel_matrices(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, test_x, test_dx, **kernel_kwargs)
 
+    """
     jitter = 1e-8 * jnp.eye(len(K_mm))
 
     # TODO: write a function that takes in the pre-computed cholesky decomps as inputs instead
@@ -108,6 +147,8 @@ def variational_posterior(descriptor_fn, kernel_fn, test_coords, train_coords, i
     # mu = K_test_m @ solve(K_mm + jitter, mu_m, assume_a='pos')
     # K_mm_inv_K_m_test = solve(K_mm + jitter, K_test_m.T, assume_a='pos')
     # cov = K_test - K_test_m @ K_mm_inv_K_m_test + K_test_m @ solve(K_mm + jitter, A_m @ K_mm_inv_K_m_test, assume_a='pos')
+    """
+    mu, var = vposterior_from_matrices(K_mm, K_mn, K_test_m, K_test_diag, train_y, sigma_y)
 
     return mu, var
 
