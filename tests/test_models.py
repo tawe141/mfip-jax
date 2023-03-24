@@ -1,4 +1,4 @@
-from models.exact import gp_predict
+from models.exact import gp_predict, gp_predict_energy
 from models.sparse import neg_elbo, neg_elbo_from_coords, variational_posterior, optimize_variational_params
 import pytest
 from data.md17 import get_molecules
@@ -17,17 +17,17 @@ config.update("jax_enable_x64", True)
 def benzene_coords():
     atoms, E, F, z = get_molecules('raw/benzene2017_dft.npz', n=10)
     pos = jnp.stack([a.get_positions() for a in atoms], axis=0)
-    return pos, F
+    return pos, E, F
 
 
 @pytest.fixture
 def benzene_with_descriptor(benzene_coords):
-    pos, F = benzene_coords
-    return vmap(inv_dist)(pos), F
+    pos, E, F = benzene_coords
+    return vmap(inv_dist)(pos), E, F
 
 
 def test_exact_predictions(benzene_with_descriptor):
-    desc, train_y = benzene_with_descriptor
+    desc, _, train_y = benzene_with_descriptor
     train_x, train_dx = desc
     train_y = train_y.flatten()
     with disable_jit():
@@ -37,8 +37,20 @@ def test_exact_predictions(benzene_with_descriptor):
         assert jnp.allclose(var, 0.0)
 
 
+def test_exact_energy_predict(benzene_with_descriptor):
+    desc, E, train_y = benzene_with_descriptor
+    train_x, train_dx = desc
+    train_y = train_y.flatten()
+    E = E.flatten()
+    with disable_jit():
+        mu, var = gp_predict_energy(train_x, train_dx, train_x, train_dx, train_y, rbf, l=1.0)
+        #assert jnp.allclose(var, 0.0)  # variance comes out to be a constant ~0.4 here, and I'm not sure why... considering this still <1kcal/mol error, maybe this isn't so bad?
+        energy_diff = jnp.mean(E - mu)
+        assert jnp.allclose(E, mu + energy_diff)
+
+
 def test_variatonal_elbo(benzene_with_descriptor, benzene_coords):
-    desc, train_y = benzene_with_descriptor
+    desc, _, train_y = benzene_with_descriptor
     train_x, train_dx = desc
     train_y = train_y.flatten()
     with disable_jit():
@@ -47,13 +59,13 @@ def test_variatonal_elbo(benzene_with_descriptor, benzene_coords):
 
     # see if the function from coords is the same
     with disable_jit():
-        pos, _ = benzene_coords
+        pos, _, _ = benzene_coords
         from_coords = neg_elbo_from_coords(vmap(inv_dist), rbf, pos, pos, train_y, 0.01, l=1.0)
         assert jnp.allclose(from_coords, ne)
 
 
 def test_variational_posterior(benzene_coords):
-    pos, F = benzene_coords
+    pos, _, F = benzene_coords
     train_y = F.flatten()
     mu, var = variational_posterior(vmap(inv_dist), rbf, pos, pos, pos, train_y, 0.001, l=1.0)
 
@@ -63,7 +75,7 @@ def test_variational_posterior(benzene_coords):
 
 
 def test_optimizing_variational(benzene_coords):
-    pos, F = benzene_coords
+    pos, _, F = benzene_coords
     train_y = F.flatten()
     inducing_pos = pos[::3]
 

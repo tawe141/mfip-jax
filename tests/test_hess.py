@@ -1,4 +1,4 @@
-from kernels.hess import rbf, matern52, explicit_hess, _get_full_K, _get_full_K_iterative, get_K, hvp, bilinear_hess, get_diag_K, get_full_K
+from kernels.hess import rbf, matern52, explicit_hess, _get_full_K, _get_full_K_iterative, get_K, hvp, bilinear_hess, get_diag_K, get_full_K, jac_K, get_jac_K
 from jax import vmap, jvp, vjp
 from functools import partial
 import jax 
@@ -29,7 +29,7 @@ def test_matern52(random_vec, random_batch):
 
 def test_explicit_hess(random_vec):
     H = explicit_hess(rbf, random_vec, random_vec, 1.0)
-    assert jnp.allclose(H, 2.0 * jnp.eye(len(random_vec)))
+    assert jnp.allclose(H, 1.1596512 * jnp.eye(len(random_vec)))
 
 
 def test_explicit_hess_batch(random_batch):
@@ -41,7 +41,7 @@ def test_explicit_hess_batch(random_batch):
     )
     H = func(rbf, random_batch, random_batch, 1.0)
     n, d = random_batch.shape
-    assert jnp.allclose(H[0, 0], 2.0 * jnp.eye(d))
+    assert jnp.allclose(H[0, 0], 1.1596512 * jnp.eye(d))
     assert jnp.all(jnp.linalg.eigvalsh(H.transpose(0,2,1,3).reshape(n*d, n*d)) > 0.0)
 
 
@@ -49,7 +49,7 @@ def test_hvp(random_vec):
     key = jax.random.PRNGKey(41)
     dx2 = jax.random.normal(key, shape=(16, 8))
     hess_vec_product = hvp(rbf, random_vec, random_vec, dx2, l=1.0)
-    assert jnp.allclose(hess_vec_product, 2 * jnp.eye(16) @ dx2)
+    assert jnp.allclose(hess_vec_product, 1.1596512 * jnp.eye(16) @ dx2)
 
     K_ij = get_K(rbf, random_vec, random_vec, dx2, dx2, l=1.0)
     assert K_ij.shape == (8, 8)
@@ -103,7 +103,7 @@ def test_bilinear_hess(random_vec):
 
     # x1=x2, dx1=dx2
     res = bilinear_hess(rbf, a, a, da, da, l=1.0)
-    assert jnp.allclose(res, da.T @ (2*jnp.eye(16)) @ da)
+    assert jnp.allclose(res, da.T @ (1.1596512*jnp.eye(16)) @ da)
 
     # x1!=x2
     res = bilinear_hess(rbf, a, b, da, db, l=1.0)
@@ -122,7 +122,23 @@ def test_iterative_K(random_batch):
     assert jnp.allclose(K, iter_K)
 
 
+def test_jac_K(random_vec):
+    a = random_vec
+    key = jax.random.PRNGKey(11)
+    da = jax.random.normal(key, shape=(16, 8))
 
+    j = jac_K(rbf, a, a, da, l=1.0)
+    assert jnp.allclose(j, jnp.zeros(8))
+
+
+def test_jac_K_batch(random_batch):
+    a = random_batch
+    key = jax.random.PRNGKey(11)
+    da = jax.random.normal(key, shape=(4, 16, 8))
+
+    JK = get_jac_K(rbf, a, a, da, l=1.0)
+    assert JK.shape == (4, 4*8)
+	
 # def test_batch_hvp(random_batch):
 #     key = jax.random.PRNGKey(41)
 #     dx2 = jax.random.normal(key, shape=(len(random_batch), 16, 8))

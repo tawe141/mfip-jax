@@ -32,7 +32,7 @@ def matern12(x1: jnp.ndarray, x2: jnp.ndarray, l: float, prefactor: float = 1.0)
     prefactor_ = jax.nn.softplus(prefactor)
     l_ = jax.nn.softplus(l)
     diff = x1 / l_ - x2 / l_
-    dist = jnp.sqrt(jnp.sum(jnp.square(diff)))
+    dist = jnp.sqrt(jnp.sum(jnp.square(diff)) + 1e-8)
     return prefactor_ * jnp.exp(-dist)
 
 
@@ -41,7 +41,7 @@ def matern32(x1: jnp.ndarray, x2: jnp.ndarray, l: float, prefactor: float = 1.0)
     prefactor_ = jax.nn.softplus(prefactor)
     l_ = jax.nn.softplus(l)
     diff = x1 / l_ - x2 / l_
-    dist = jnp.sqrt(jnp.sum(jnp.square(diff)))
+    dist = jnp.sqrt(jnp.sum(jnp.square(diff)) + 1e-8)
     a = 1 + jnp.sqrt(3.0) * dist
     return prefactor_ * a * jnp.exp(-jnp.sqrt(3.0) * dist)
 
@@ -61,15 +61,31 @@ def matern52(x1: jnp.ndarray, x2: jnp.ndarray, l: float, prefactor: float = 1.0)
 #     return kernel_fn(x1_, x2_, kernel_kwargs)
 
 
+def jac_K(kernel_fn, x1, x2, dx2, **kernel_kwargs):
+    """
+    Calculates d/dx2 K(x1, x2)
+    """
+    partial_kernel = partial(kernel_fn, x1, **kernel_kwargs)
+    jvp_col = lambda a: jvp(partial_kernel, (x2, ), (a, ))[1]
+    jvp_columnwise = vmap(jvp_col, in_axes=1)
+    return jvp_columnwise(dx2)
+
+
 def bilinear_hess(kernel_fn, x1, x2, dx1, dx2, **kernel_kwargs):
+    """
+    Calculates the Hessian kernel d2/dx1dx2 K(x1, x2) using JAX's JVP primitives
+    """
+    
+    """
     def jac_x2_vec_dot(kernel_fn, x1, x2, dx2, **kernel_kwargs):
         # finds the jacobian wrt x2 and applies linear map according to dx2
         partial_kernel = partial(kernel_fn, x1, **kernel_kwargs)
         jvp_col = lambda a: jvp(partial_kernel, (x2, ), (a, ))[1]
         jvp_columnwise = vmap(jvp_col, in_axes=1)
         return jvp_columnwise(dx2)
-
-    partial_jac = partial(jac_x2_vec_dot, kernel_fn, x2=x2, dx2=dx2, **kernel_kwargs)
+    """
+    #partial_jac = partial(jac_x2_vec_dot, kernel_fn, x2=x2, dx2=dx2, **kernel_kwargs)
+    partial_jac = partial(jac_K, kernel_fn, x2=x2, dx2=dx2, **kernel_kwargs)
     jvp_col = lambda a: jvp(partial_jac, (x1, ), (a, ))[1]
     jvp_columnwise = vmap(jvp_col, in_axes=1)
     return jvp_columnwise(dx1)
@@ -162,6 +178,23 @@ def get_full_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.n
     K = _get_full_K(kernel_fn, x1, x2, dx1, dx2, **kernel_kwargs)
     m1, m2, d1, d2 = K.shape
     return flatten(K, m1, d1, m2, d2)
+
+
+def _get_jac_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx2: jnp.array, **kernel_kwargs) -> jnp.ndarray:
+    """
+    Returns the Jacobian of K wrt x2, ie d/dx2 K(x1, x2) in shape (N, N, D, E), where N = # in batch, D is dimensionality of the descriptor, E is the dimensionality of the inputs to the descriptor 
+    """
+    K_partial = partial(jac_K, **kernel_kwargs)
+    func = vmap(
+        vmap(K_partial, in_axes=(None, None, 0, 0)),
+        in_axes=(None, 0, None, None)
+    )
+    return func(kernel_fn, x1, x2, dx2)
+
+
+def get_jac_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx2: jnp.array, **kernel_kwargs) -> jnp.ndarray:
+    K = _get_jac_K(kernel_fn, x1, x2, dx2, **kernel_kwargs)
+    return K.reshape(len(x1), len(x2) * dx2.shape[-1])
 
 
 def get_full_K_iterative(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.array, **kernel_kwargs) -> jnp.ndarray:
