@@ -1,8 +1,8 @@
 import jax.numpy as jnp
-from jax import grad, jit, value_and_grad
+from jax import grad, jit, value_and_grad, vmap
 from utils.safe_cholesky import safe_cholesky
 from jax.scipy.linalg import solve, solve_triangular, cho_solve
-from kernels.hess import get_full_K, get_diag_K, get_full_K_iterative
+from kernels.hess import get_full_K, get_diag_K, get_full_K_iterative, get_jac_K
 from functools import partial
 import pdb
 import tqdm
@@ -59,12 +59,25 @@ def _normalize(x, mu, std):
 
 def get_kernel_matrices(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, test_x, test_dx, **kernel_kwargs):
     """
-    Obtains the needed kernel matrices for variational posterior evaluation
+    Obtains the needed kernel matrices for variational posterior evaluation for forces
     """
     K_mm = get_full_K(kernel_fn, inducing_x, inducing_x, inducing_dx, inducing_dx, **kernel_kwargs)
     K_mn = get_full_K_iterative(kernel_fn, inducing_x, train_x, inducing_dx, train_dx, **kernel_kwargs)
     K_test_m = get_full_K_iterative(kernel_fn, inducing_x, test_x, inducing_dx, test_dx, **kernel_kwargs).T
     K_test_diag = get_diag_K(kernel_fn, test_x, test_x, test_dx, test_dx, **kernel_kwargs)
+
+    return K_mm, K_mn, K_test_m, K_test_diag
+
+
+def get_kernel_matrices_energy(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, test_x, test_dx, **kernel_kwargs):
+    """
+    Obtains the needed kernel matrices for variational posterior evaluation for forces
+    """
+    K_mm = get_full_K(kernel_fn, inducing_x, inducing_x, inducing_dx, inducing_dx, **kernel_kwargs)
+    K_mn = get_full_K_iterative(kernel_fn, inducing_x, train_x, inducing_dx, train_dx, **kernel_kwargs)
+    K_test_m = get_jac_K(kernel_fn, test_x, inducing_x, inducing_dx, **kernel_kwargs)
+    kernel_fn_diag = vmap(partial(kernel_fn, **kernel_kwargs), in_axes=(0, 0))
+    K_test_diag = kernel_fn_diag(test_x, test_x)
 
     return K_mm, K_mn, K_test_m, K_test_diag
 
@@ -151,6 +164,18 @@ def variational_posterior(descriptor_fn, kernel_fn, test_coords, train_coords, i
     mu, var = vposterior_from_matrices(K_mm, K_mn, K_test_m, K_test_diag, train_y, sigma_y)
 
     return mu, var
+
+
+def variational_posterior_energy(descriptor_fn, kernel_fn, test_coords, train_coords, inducing_coords, train_y, sigma_y, **kernel_kwargs):
+    train_x, train_dx = descriptor_fn(train_coords)
+    test_x, test_dx = descriptor_fn(test_coords)
+    inducing_x, inducing_dx = descriptor_fn(inducing_coords)
+
+    K_mm, K_mn, K_test_m, K_test_diag = get_kernel_matrices_energy(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, test_x, test_dx, **kernel_kwargs)
+
+    mu, var = vposterior_from_matrices(K_mm, K_mn, K_test_m, K_test_diag, train_y, sigma_y)
+    return mu, var
+
 
 
 # @profile

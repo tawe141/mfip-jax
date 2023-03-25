@@ -1,5 +1,5 @@
-from models.exact import gp_predict, gp_predict_energy
-from models.sparse import neg_elbo, neg_elbo_from_coords, variational_posterior, optimize_variational_params
+from models.exact import *
+from models.sparse import *
 import pytest
 from data.md17 import get_molecules
 from descriptors.inv_dist import inv_dist
@@ -49,6 +49,32 @@ def test_exact_energy_predict(benzene_with_descriptor):
         assert jnp.allclose(E, mu + energy_diff)
 
 
+def test_kernel_matrices(benzene_with_descriptor):
+    desc, E, train_y = benzene_with_descriptor
+    train_x, train_dx = desc
+    inducing_x, inducing_dx = train_x[::2], train_dx[::2]  # take every other training point to be an inducing point
+    train_y = train_y.flatten()
+    with disable_jit():
+        K_mm, K_mn, K_test_m, K_test_diag = get_kernel_matrices(rbf, train_x, train_dx, inducing_x, inducing_dx, train_x, train_dx, l=1.0)
+        assert K_mm.shape == (len(inducing_x) * 36, len(inducing_x) * 36)
+        assert K_mn.shape == (len(inducing_x) * 36, len(train_x) * 36)
+        assert K_test_m.shape == (len(train_x) * 36, len(inducing_x) * 36)
+        assert K_test_diag.shape == (len(train_x) * 36,)
+
+
+def test_kernel_matrices_energy(benzene_with_descriptor):
+    desc, E, train_y = benzene_with_descriptor
+    train_x, train_dx = desc
+    inducing_x, inducing_dx = train_x[::2], train_dx[::2]  # take every other training point to be an inducing point
+    train_y = train_y.flatten()
+    with disable_jit():
+        K_mm, K_mn, K_test_m, K_test_diag = get_kernel_matrices_energy(rbf, train_x, train_dx, inducing_x, inducing_dx, train_x, train_dx, l=1.0)
+        assert K_mm.shape == (len(inducing_x) * 36, len(inducing_x) * 36)
+        assert K_mn.shape == (len(inducing_x) * 36, len(train_x) * 36)
+        assert K_test_m.shape == (len(train_x), len(inducing_x) * 36)
+        assert K_test_diag.shape == (len(train_x),)
+
+
 def test_variatonal_elbo(benzene_with_descriptor, benzene_coords):
     desc, _, train_y = benzene_with_descriptor
     train_x, train_dx = desc
@@ -72,6 +98,21 @@ def test_variational_posterior(benzene_coords):
     # assert jnp.allclose(mu, train_y)    # covariance works but not the means... not sure why
     # means are only 1e-2 off, which is probably ok
     assert jnp.allclose(var, 0.0, atol=1e-5)
+
+
+def test_variational_posterior_energy(benzene_coords):
+    pos, E, F = benzene_coords
+    train_y = F.flatten()
+    inducing_pos = pos[::2]
+    E = E.flatten()
+    mu, var = variational_posterior_energy(vmap(inv_dist), rbf, pos, pos, inducing_pos, train_y, 0.001, l=1.0)
+
+    assert mu.shape == (10,)
+    assert var.shape == (10,)
+
+    energy_diff = jnp.mean(E - mu)
+    assert jnp.allclose(mu + energy_diff, E)
+    assert jnp.all(var > 0)
 
 
 def test_optimizing_variational(benzene_coords):
