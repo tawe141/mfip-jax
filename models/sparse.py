@@ -82,6 +82,14 @@ def get_kernel_matrices_energy(kernel_fn, train_x, train_dx, inducing_x, inducin
     return K_mm, K_mn, K_test_m, K_test_diag
 
 
+def get_kernel_matrices_energy_force(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, test_x, test_dx, **kernel_kwargs):
+    K_mm, K_mn, K_test_m_F, K_test_diag_F = get_kernel_matrices(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, test_x, test_dx, **kernel_kwargs)
+    K_test_m_E = get_jac_K(kernel_fn, test_x, inducing_x, inducing_dx, **kernel_kwargs)
+    kernel_fn_diag = vmap(partial(kernel_fn, **kernel_kwargs), in_axes=(0, 0))
+    K_test_diag_E = kernel_fn_diag(test_x, test_x)
+    return K_mm, K_mn, K_test_m_E, K_test_m_F, K_test_diag_E, K_test_diag_F
+
+
 def vposterior_from_matrices(K_mm, K_mn, K_test_m, K_test_diag, train_y, sigma_y):
     jitter = 1e-8 * jnp.eye(len(K_mm))
     
@@ -103,6 +111,48 @@ def vposterior_from_matrices(K_mm, K_mn, K_test_m, K_test_diag, train_y, sigma_y
             - jnp.sum(jnp.square(L_inv_K_m_test), axis=0)  # square function is known to produce nans
     
     return mu, var
+
+
+def vposterior_from_matrices_energy_forces(K_mm, K_mn, K_test_m_E, K_test_m_F, K_test_diag_E, K_test_diag_F, train_y, sigma_y):
+    jitter = 1e-8 * jnp.eye(len(K_mm))
+    
+    L = jnp.linalg.cholesky(K_mm + jitter)
+
+    A = solve_triangular(L, K_mn, lower=True) / sigma_y
+    B = A @ A.T + jnp.eye(len(A))
+    L_B = jnp.linalg.cholesky(B)
+    c = solve_triangular(L_B, A.dot(train_y), lower=True) / sigma_y
+
+    alpha = solve_triangular(
+        L.T, solve_triangular(L_B.T, c, lower=False), lower=False
+    )
+
+    # energy evaluation
+    E_mu = K_test_m_E @ alpha
+    L_inv_K_m_test = solve_triangular(L, K_test_m_E.T, lower=True)
+    LB_inv_L_inv_K_m_test = solve_triangular(L_B, L_inv_K_m_test, lower=True)
+    E_var = K_test_diag_E \
+        + jnp.sum(jnp.square(LB_inv_L_inv_K_m_test), axis=0) \
+            - jnp.sum(jnp.square(L_inv_K_m_test), axis=0)
+
+    # force evaluation
+    F_mu = K_test_m_F @ alpha
+    L_inv_K_m_test = solve_triangular(L, K_test_m_F.T, lower=True)
+    LB_inv_L_inv_K_m_test = solve_triangular(L_B, L_inv_K_m_test, lower=True)
+    F_var = K_test_diag_F \
+        + jnp.sum(jnp.square(LB_inv_L_inv_K_m_test), axis=0) \
+            - jnp.sum(jnp.square(L_inv_K_m_test), axis=0)
+    
+    return E_mu, E_var, F_mu, F_var
+
+
+def variational_posterior_energy_force(descriptor_fn, kernel_fn, test_coords, train_coords, inducing_coords, train_y, sigma_y, **kernel_kwargs):
+    train_x, train_dx = descriptor_fn(train_coords)
+    test_x, test_dx = descriptor_fn(test_coords)
+    inducing_x, inducing_dx = descriptor_fn(inducing_coords)
+    matrices = get_kernel_matrices_energy_force(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, test_x, test_dx, **kernel_kwargs)
+    return vposterior_from_matrices_energy_forces(*matrices, train_y, sigma_y)
+
 
 # @profile
 # @partial(jit, static_argnames=['descriptor_fn', 'kernel_fn'])

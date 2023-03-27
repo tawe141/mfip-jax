@@ -75,6 +75,20 @@ def test_kernel_matrices_energy(benzene_with_descriptor):
         assert K_test_diag.shape == (len(train_x),)
 
 
+def test_kernel_matrices_energy_force(benzene_with_descriptor):
+    desc, E, train_y = benzene_with_descriptor
+    train_x, train_dx = desc
+    inducing_x, inducing_dx = train_x[::2], train_dx[::2]  # take every other training point to be an inducing point
+
+    K_mm, K_mn, K_test_m_E, K_test_m_F, K_test_diag_E, K_test_diag_F = get_kernel_matrices_energy_force(rbf, train_x, train_dx, inducing_x, inducing_dx, train_x, train_dx, l=1.0)
+    assert K_mm.shape == (len(inducing_x) * 36, len(inducing_x) * 36)
+    assert K_mn.shape == (len(inducing_x) * 36, len(train_x) * 36)
+    assert K_test_m_E.shape == (len(train_x), len(inducing_x) * 36)
+    assert K_test_diag_E.shape == (len(train_x),)
+    assert K_test_m_F.shape == (len(train_x) * 36, len(inducing_x) * 36)
+    assert K_test_diag_F.shape == (len(train_x) * 36,)
+
+
 def test_variatonal_elbo(benzene_with_descriptor, benzene_coords):
     desc, _, train_y = benzene_with_descriptor
     train_x, train_dx = desc
@@ -103,7 +117,7 @@ def test_variational_posterior(benzene_coords):
 def test_variational_posterior_energy(benzene_coords):
     pos, E, F = benzene_coords
     train_y = F.flatten()
-    inducing_pos = pos[::2]
+    inducing_pos = pos
     E = E.flatten()
     mu, var = variational_posterior_energy(vmap(inv_dist), rbf, pos, pos, inducing_pos, train_y, 0.001, l=1.0)
 
@@ -113,6 +127,21 @@ def test_variational_posterior_energy(benzene_coords):
     energy_diff = jnp.mean(E - mu)
     assert jnp.allclose(mu + energy_diff, E)
     assert jnp.all(var > 0)
+
+
+def test_vposterior_energy_force(benzene_coords):
+    pos, E, F = benzene_coords
+    train_y = F.flatten()
+    inducing_pos = pos[::2]
+    E = E.flatten()
+    E_mu, E_var, F_mu, F_var = variational_posterior_energy_force(vmap(inv_dist), rbf, pos, pos, inducing_pos, train_y, 0.001, l=1.0)
+    
+    assert jnp.allclose(train_y, F_mu, atol=1e-1)
+    assert jnp.all(F_var >= 0.0)
+    assert E.shape == E_mu.shape
+    assert jnp.all(E_var >= 0.0)
+    energy_diff = jnp.mean(E - E_mu)
+    assert jnp.allclose(E_mu + energy_diff, E)
 
 
 def test_optimizing_variational(benzene_coords):
