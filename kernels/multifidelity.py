@@ -1,7 +1,7 @@
 import jax
 from jax import vmap
 import jax.numpy as jnp
-from .hess import bilinear_hess, flatten
+from .hess import bilinear_hess, jac_K, flatten
 from functools import partial
 from typing import Callable
 
@@ -27,7 +27,15 @@ def get_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarra
     return bilinear_hess(kernel_fn, x1, x2, dx1, dx2, f_x1=f_x1, f_x2=f_x2, **kernel_kwargs)
 
 
-def _get_full_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.array, E_sample_x1, E_sample_x2, **kernel_kwargs) -> jnp.ndarray:
+def get_K_jac(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx2: jnp.array, f_x1, f_x2, **kernel_kwargs) -> jnp.ndarray:
+    """
+    Analogous to `get_K`; obtains the single Jacobian matrix of one row of x1 and x2
+    TODO: terrible naming convention...
+    """
+    return jac_K(kernel_fn, x1, x2, dx2, f_x1=f_x2, f_x2=f_x2)
+
+
+def _get_full_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.array, E_sample_x1, E_sample_x2, iterative=False, **kernel_kwargs) -> jnp.ndarray:
     #E_sample_x1, rng_key = _normal_sample(E_mu_x1, E_var_x1, rng_key)
     #E_sample_x2, rng_key = _normal_sample(E_mu_x2, E_var_x2, rng_key)
     k_fn = partial(perdikaris_kernel, kernel_fn, **kernel_kwargs)
@@ -52,8 +60,40 @@ def get_diag_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.n
     return func(k_fn, x1, x2, dx1, dx2, E_sample_x1, E_sample_x2).flatten()
 
 
-def get_full_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.array, E_sample_x1, E_sample_x2, **kernel_kwargs) -> jnp.ndarray:
-    K = _get_full_K(kernel_fn, x1, x2, dx1, dx2, E_sample_x1, E_sample_x2, **kernel_kwargs)
+def get_full_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.array, E_sample_x1, E_sample_x2, iterative=False, **kernel_kwargs) -> jnp.ndarray:
+    K = jax.lax.cond(iterative, partial(_get_full_K, kernel_fn, **kernel_kwargs), partial(_get_full_K_iterative, kernel_fn, **kernel_kwargs), x1, x2, dx1, dx2, E_sample_x1, E_sample_x2)
+    #K = jax.lax.cond(iterative, _get_full_K, _get_full_K_iterative, kernel_fn, x1, x2, dx1, dx2, E_sample_x1, E_sample_x2, **kernel_kwargs)
+    #K = _get_full_K(kernel_fn, x1, x2, dx1, dx2, E_sample_x1, E_sample_x2, **kernel_kwargs)
     m1, m2, d1, d2 = K.shape
     return flatten(K, m1, d1, m2, d2)
 
+
+def _get_full_K_iterative(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.array, E_sample_x1, E_sample_x2, **kernel_kwargs) -> jnp.ndarray:
+    """
+    Getting the full kernel matrix can be brutally memory intensive. Iterate over x1/dx1 and build the matrix row-by-row
+    """
+    k_fn = partial(perdikaris_kernel, kernel_fn, **kernel_kwargs)
+    vec_over_x2 = vmap(get_K, in_axes=(None, None, 0, None, 0, None, 0), out_axes=0)
+    def calc_row(i, val):
+        val = val.at[i].set(vec_over_x2(k_fn, x1[i], x2, dx1[i], dx2, E_sample_x1[i], E_sample_x2))
+        return val
+    init_val = jnp.zeros((len(x1), len(x2), dx1.shape[-1], dx2.shape[-1]))
+    return jax.lax.fori_loop(0, len(x1), calc_row, init_val)
+
+
+def _get_jac_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx2: jnp.array, E_sample_x1, E_sample_x2, **kernel_kwargs) -> jnp.ndarray:
+    """
+    Returns the Jacobian of K wrt x2, ie d/dx2 K(x1, x2) in shape (N, N, D, E), where N = # in batch, D is dimensionality of the descriptor, E is the dimensionality of the inputs to the descriptor 
+    """
+    #K_partial = partial(jac_K, **kernel_kwargs)
+    k_fn = partial(perdikaris_kernel, kernel_fn, **kernel_kwargs)
+    func = vmap(
+        vmap(get_K_jac, in_axes=(None, None, 0, 0, None, 0)),
+        in_axes=(None, 0, None, None, 0, None)
+    )
+    return func(k_fn, x1, x2, dx2, E_sample_x1, E_sample_x2)
+
+
+def get_jac_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx2: jnp.array, E_sample_x1, E_sample_x2, **kernel_kwargs) -> jnp.ndarray:
+    K = _get_jac_K(kernel_fn, x1, x2, dx2, E_sample_x1, E_sample_x2, **kernel_kwargs)
+    return K.reshape(len(x1), len(x2) * dx2.shape[-1])

@@ -1,0 +1,2 @@
+- Refactor kernel matrix functions into primitive (ie not vectorized) and vectorized for both normal sparse GP and multifidelity sparse GP
+- See if there's a good way to re-use functions in sparse GP for multifidelity kernel functions. Code looks gross right now with tons of repeats

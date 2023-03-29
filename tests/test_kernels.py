@@ -168,12 +168,27 @@ def test_multifidelity_get_K_batch(random_batch):
 
     # main K matrix function, with a reshape op
     K = mf.get_full_K(rbf, a, a, da, da, E, E, lp=1.0, lf=1.0, ld=1.0)
+    K_iter = mf.get_full_K(rbf, a, a, da, da, E, E, iterative=True, lp=1.0, lf=1.0, ld=1.0)
+
+    assert jnp.allclose(K, K_iter)
     assert K.shape == (32, 32)
     assert jnp.all(jnp.linalg.eigvalsh(K + 1e-8 * jnp.eye(32, 32)) > 0.0)
 
     # test diag
     Kd = mf.get_diag_K(rbf, a, a, da, da, E, E, lp=1.0, lf=1.0, ld=1.0)
     assert Kd.shape == (32, )
+
+
+def test_multifidelity_get_K_jac(random_batch):
+    a = random_batch
+    key = jax.random.PRNGKey(11)
+    da = jax.random.normal(key, shape=(4, 16, 8))
+    new_key, subkey = jax.random.split(key)
+    E = jax.random.uniform(subkey, shape=(4,))
+
+    jac_K = mf.get_jac_K(rbf, a, a, da, E, E, lp=1.0, lf=1.0, ld=1.0)
+    assert jac_K.shape == (4, 32)
+
 
     
 
