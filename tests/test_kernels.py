@@ -1,4 +1,5 @@
 from kernels.hess import rbf, matern52, explicit_hess, _get_full_K, _get_full_K_iterative, get_K, hvp, bilinear_hess, get_diag_K, get_full_K, jac_K, get_jac_K
+import kernels.multifidelity as mf
 from jax import vmap, jvp, vjp
 from functools import partial
 import jax 
@@ -138,9 +139,41 @@ def test_jac_K_batch(random_batch):
 
     JK = get_jac_K(rbf, a, a, da, l=1.0)
     assert JK.shape == (4, 4*8)
-	
-# def test_batch_hvp(random_batch):
-#     key = jax.random.PRNGKey(41)
-#     dx2 = jax.random.normal(key, shape=(len(random_batch), 16, 8))
-#     with jax.disable_jit():
-#         hess_vec_product = hvp(rbf, random_batch, random_batch, dx2, l=1.0)
+
+
+def test_perdikaris(random_vec):
+    a = random_vec
+    key = jax.random.PRNGKey(11)
+    da = jax.random.normal(key, shape=(16, 8))
+    k = mf.perdikaris_kernel(rbf, a, a, 1.0, 1.0, 1.0, 1.0, 1.0)
+    assert jnp.allclose(k, 2.0)
+    
+    k_fn = partial(mf.perdikaris_kernel, rbf, lp=1.0, lf=1.0, ld=1.0)
+     
+    K_hess = get_K(k_fn, a, a, da, da, f_x1=1.0, f_x2=1.0)
+    assert K_hess.shape == (8, 8)
+    assert jnp.all(jnp.linalg.eigvalsh(K_hess + 1e-8 * jnp.eye(8, 8)) >= 0.0)
+
+
+def test_multifidelity_get_K_batch(random_batch):
+    a = random_batch
+    key = jax.random.PRNGKey(11)
+    da = jax.random.normal(key, shape=(4, 16, 8))
+    new_key, subkey = jax.random.split(key)
+    E = jax.random.uniform(subkey, shape=(4,))
+
+    # main K matrix function
+    K = mf._get_full_K(rbf, a, a, da, da, E, E, lp=1.0, lf=1.0, ld=1.0)
+    assert K.shape == (4, 4, 8, 8)
+
+    # main K matrix function, with a reshape op
+    K = mf.get_full_K(rbf, a, a, da, da, E, E, lp=1.0, lf=1.0, ld=1.0)
+    assert K.shape == (32, 32)
+    assert jnp.all(jnp.linalg.eigvalsh(K + 1e-8 * jnp.eye(32, 32)) > 0.0)
+
+    # test diag
+    Kd = mf.get_diag_K(rbf, a, a, da, da, E, E, lp=1.0, lf=1.0, ld=1.0)
+    assert Kd.shape == (32, )
+
+    
+
