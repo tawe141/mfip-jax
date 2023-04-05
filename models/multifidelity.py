@@ -1,44 +1,66 @@
-from .sparse import variational_posterior
+from .sparse import variational_posterior, vposterior_from_matrices_energy_forces
 from kernels.multifidelity import perdikaris_kernel
 from typing import List
 import jax
 import jax.numpy as jnp
 
 
-def get_kernel_matrices(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, test_x, test_dx, **kernel_kwargs):
+def _normal_sample(mu, var, rng_key):
+    new_key, subkey = jax.random.split(rng_key)
+    return mu + jax.random.normal(subkey, mu.shape) * jnp.sqrt(var), new_key
+
+
+def get_kernel_matrices(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, test_x, test_dx, E_train, E_inducing, E_test, **kernel_kwargs):
     """
     Obtains the needed kernel matrices for variational posterior evaluation for forces
     """
-    K_mm = get_full_K(kernel_fn, inducing_x, inducing_x, inducing_dx, inducing_dx, **kernel_kwargs)
-    K_mn = get_full_K_iterative(kernel_fn, inducing_x, train_x, inducing_dx, train_dx, **kernel_kwargs)
-    K_test_m = get_full_K_iterative(kernel_fn, inducing_x, test_x, inducing_dx, test_dx, **kernel_kwargs).T
-    K_test_diag = get_diag_K(kernel_fn, test_x, test_x, test_dx, test_dx, **kernel_kwargs)
+    K_mm = get_full_K(kernel_fn, inducing_x, inducing_x, inducing_dx, inducing_dx, E_inducing, E_inducing, **kernel_kwargs)
+    K_mn = get_full_K(kernel_fn, inducing_x, train_x, inducing_dx, train_dx, E_inducing, E_train, iterative=True, **kernel_kwargs)
+    K_test_m = get_full_K(kernel_fn, inducing_x, test_x, inducing_dx, test_dx, E_inducing, E_test, iterative=True, **kernel_kwargs).T
+    K_test_diag = get_diag_K(kernel_fn, test_x, test_x, test_dx, test_dx, E_test, E_test, **kernel_kwargs)
 
     return K_mm, K_mn, K_test_m, K_test_diag
 
 
-def get_kernel_matrices_energy_force(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, test_x, test_dx, **kernel_kwargs):
-    K_mm, K_mn, K_test_m_F, K_test_diag_F = get_kernel_matrices(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, test_x, test_dx, **kernel_kwargs)
-    K_test_m_E = get_jac_K(kernel_fn, test_x, inducing_x, inducing_dx, **kernel_kwargs)
-    kernel_fn_diag = vmap(partial(kernel_fn, **kernel_kwargs), in_axes=(0, 0))
-    K_test_diag_E = kernel_fn_diag(test_x, test_x)
+def get_kernel_matrices_energy_force(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, test_x, test_dx, E_train, E_inducing, E_test, **kernel_kwargs):
+    K_mm, K_mn, K_test_m_F, K_test_diag_F = get_kernel_matrices(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, test_x, test_dx, E_train, E_inducing, E_test, **kernel_kwargs)
+    K_test_m_E = get_jac_K(kernel_fn, test_x, inducing_x, inducing_dx, E_test, E_inducing, **kernel_kwargs)
+    kernel_fn_diag = vmap(partial(perdikaris_kernel, kernel_fn, **kernel_kwargs), in_axes=(0, 0, 0, 0))
+    K_test_diag_E = kernel_fn_diag(test_x, test_x, E_test, E_test)
     return K_mm, K_mn, K_test_m_E, K_test_m_F, K_test_diag_E, K_test_diag_F
 
 
-def mf_step_E(kernel_fn, train_x, train_dx, test_x, test_dx, inducing_x, inducing_dx, E_mu_x1, E_var_x1, E_mu_x2, E_var_x2, rng_key: jax.random.PRNGKey, **kernel_kwargs):
+def vposterior(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, test_x, test_dx, E_train, E_inducing, E_test, train_y, sigma_y, **kernel_kwargs):
+    K_matrices = get_kernel_matrices_energy_force(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, test_x, test_dx, E_train, E_inducing, E_test, **kernel_kwargs)
+    return vposterior_from_matrices_energy_forces(*K_matrices, train_y, sigma_y)
+
+
+def mf_step_E(kernel_fn, train_x, train_dx, test_x, test_dx, inducing_x, inducing_dx, E_mu_train, E_var_train, E_mu_test, E_var_test, E_mu_inducing, E_var_inducing, rng_key: jax.random.PRNGKey, **kernel_kwargs):
 	"""
     Samples the energies from the last fidelity and uses it as part of the kernel a la Perdikaris et al. 2017
     """
+    """
     #sample from the posterior of the last step
-    new_key, subkey = jax.random.split(rng_key)
-    E_sample_x1 = jax.random.normal(subkey, shape=E_mu_x1.shape) * jnp.sqrt(E_var_x1) + E_mu_x1
-    new_key, subkey = jax.random.split(rng_key)
-    E_sample_x2 = jax.random.normal(subkey, shape=E_mu_x2.shape) * jnp.sqrt(E_var_x2) + E_mu_x2
+    #TODO: energy variance calculation is broken due to a rather difficult integral... going to just use the mean for now. 
+    E_train, rng_key = _normal_sample(E_mu_train, E_var_train, rng_key)
+    E_test, rng_key = _normal_sample(E_mu_test, E_var_test, rng_key)
+    E_inducing, rng_key = _normal_sample(E_mu_inducing, E_var_inducing, rng_key)
+    """
+    E_train = E_mu_train
+    E_test = E_mu_test
+    E_inducing = E_mu_inducing
 
-    
-	#construct covariance matrix from previous fidelity's cov matrix a la Perdikaris et al. 2017
-	#evaluate variational posterior using newly constructed covariance matrix
-    
+    fn = partial(vposterior, kernel_fn, train_x, train_dx, inducing_x, inducing_dx, E_train=E_train, E_inducing=E_inducing, E_test=E_test, train_y=train_y, sigma_y=sigma_y, **kernel_kwargs)
 
+    #TODO: this is a pretty terrible way of evaluating all the necessary energies and can be made much more efficient
+    #for instance, this will compute the same Cholesky decomps multiple times
+    E_mu_train, E_var_train, F_mu_train, F_var_train = fn(train_x, train_dx)
+    E_mu_test, E_var_test, F_mu_test, F_var_test = fn(test_x, test_dx)
+    E_mu_inducing, E_var_inducing, F_mu_inducing, F_var_inducing = fn(inducing_x, inducing_dx)
+
+    return (
+        (E_mu_train, E_var_train, E_mu_test, E_var_test, E_mu_inducing, E_var_inducing),
+        (F_mu_train, F_var_train, F_mu_test, F_var_test, F_mu_inducing, F_var_inducing),
+    )
 
 # def mf():

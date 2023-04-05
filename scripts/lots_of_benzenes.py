@@ -4,7 +4,7 @@ Try training a GP with many benzene configurations
 
 from data.md17 import get_molecules
 from descriptors.inv_dist import inv_dist 
-from models.sparse import optimize_variational_params, variational_posterior, neg_elbo_from_coords
+from models.sparse import optimize_variational_params, variational_posterior_energy_force, neg_elbo_from_coords
 from kernels.hess import rbf, scaled_rbf, matern12, matern32, matern52
 import jax.numpy as jnp
 from jax import vmap, jit
@@ -21,26 +21,33 @@ from functools import partial
 
 config.update("jax_enable_x64", True)
 #config.update("jax_debug_nans", True)
-#config.update("jax_disable_jit", True)
+config.update("jax_disable_jit", True)
 
 
-KERNEL_FN = matern52
+KERNEL_FN = scaled_rbf 
 
 
 @partial(jit, static_argnames=['descriptor_fn', 'kernel_fn'])
-def get_variational_rmse(descriptor_fn, kernel_fn, test_pos, train_pos, inducing_pos, train_F, test_F, sigma_y, **kernel_kwargs):
+def get_variational_rmse(descriptor_fn, kernel_fn, test_pos, train_pos, inducing_pos, train_E, test_E, train_F, test_F, sigma_y, **kernel_kwargs):
     train_y = train_F.flatten()
-    mu, var = variational_posterior(descriptor_fn, kernel_fn, test_pos, train_pos, inducing_pos, train_y, sigma_y, **kernel_kwargs)
-    mu = mu.reshape(test_F.shape)
-    mse = jnp.mean((mu - test_F)**2, axis=(-1, -2))
-    rmse_overall = jnp.sqrt(jnp.mean(mse))
-    rmse_forces = jnp.sqrt(mse)
-    return rmse_overall, rmse_forces
+    E_mu, E_var, F_mu, F_var = variational_posterior_energy_force(descriptor_fn, kernel_fn, test_pos, train_pos, inducing_pos, train_y, sigma_y, **kernel_kwargs)
+    F_mu = F_mu.reshape(test_F.shape)
+    F_mse = jnp.mean((F_mu - test_F)**2, axis=(-1, -2))
+    #pdb.set_trace()
+    E_c = jnp.mean(test_E + E_mu)
+    E_predict = E_c - E_mu
+    #E_diff = jnp.mean(test_E - E_mu)  # this is definitely data leaking... TODO: fix
+    #E_predict = E_mu + E_diff
+    E_rmse = jnp.sqrt(jnp.mean((E_predict - test_E)**2))
+    rmse_overall = jnp.sqrt(jnp.mean(F_mse))
+    rmse_forces = jnp.sqrt(F_mse)
+    return rmse_overall, rmse_forces, E_rmse
 
 
 atoms, E, F, z = get_molecules('raw/benzene2017_dft.npz', n=10000)
+E = E.flatten()
 pos = jnp.stack([a.get_positions() for a in atoms], axis=0)
-train_pos, test_pos, train_F, test_F, train_ind, test_ind = train_test_split(pos, F, jnp.arange(len(pos)), test_size=0.9, shuffle=True)
+train_pos, test_pos, train_E, test_E, train_F, test_F, train_ind, test_ind = train_test_split(pos, E, F, jnp.arange(len(pos)), test_size=0.9, shuffle=True)
 train_y, test_y = train_F.flatten(), test_F.flatten()
 
 # choose every 20 configurations to be inducing points
@@ -48,11 +55,13 @@ inducing_pos = train_pos[::20]
 print('Using %i inducing points' % len(inducing_pos))
 descriptor_fn = jit(vmap(inv_dist))
 
-rmse_train_overall, rmse_train_forces = get_variational_rmse(descriptor_fn, KERNEL_FN, train_pos, train_pos, inducing_pos, train_F, train_F, 0.01, l=1.0, prefactor=1.0)
-rmse_test_overall, rmse_test_forces = get_variational_rmse(descriptor_fn, KERNEL_FN, test_pos, train_pos, inducing_pos, train_F, test_F, 0.01, l=1.0, prefactor=1.0)
+rmse_train_overall, rmse_train_forces, rmse_train_E = get_variational_rmse(descriptor_fn, KERNEL_FN, train_pos, train_pos, inducing_pos, train_E, train_E, train_F, train_F, 0.001, l=1.0, prefactor=1.0)
+rmse_test_overall, rmse_test_forces, rmse_test_E = get_variational_rmse(descriptor_fn, KERNEL_FN, test_pos, train_pos, inducing_pos, train_E, test_E, train_F, test_F, 0.001, l=1.0, prefactor=1.0)
 
-print('Train RMSE: %.3f' % rmse_train_overall)
-print('Test RMSE: %.3f' % rmse_test_overall)
+print('Force train RMSE: %.3f' % rmse_train_overall)
+print('Force test RMSE: %.3f' % rmse_test_overall)
+print('Energy train RMSE: %.3f' % rmse_train_E)
+print('Energy test RMSE: %.3f' % rmse_test_E)
 """
 # get initial error metrics
 # with jax.disable_jit():
@@ -100,7 +109,7 @@ elbo_grid = jnp.zeros((n_l, n_prefactor))
 
 for i, l in enumerate(l_list):
     for j, prefactor in enumerate(prefactor_list):
-        rmse, _ = get_variational_rmse(descriptor_fn, KERNEL_FN, test_pos, train_pos, inducing_pos, train_F, test_F, 1e-4, l=l, prefactor=prefactor)
+        rmse, _, _ = get_variational_rmse(descriptor_fn, KERNEL_FN, test_pos, train_pos, inducing_pos, train_E, test_E, train_F, test_F, 1e-4, l=l, prefactor=prefactor)
         rmse_grid = rmse_grid.at[i, j].set(rmse)
         elbo = neg_elbo_from_coords(descriptor_fn, KERNEL_FN, train_pos, inducing_pos, train_y, 1e-4, l=l, prefactor=prefactor)
         elbo_grid = elbo_grid.at[i, j].set(elbo)
@@ -141,12 +150,13 @@ new_neg_elbo, new_params = optimize_variational_params(
 l = new_params['l']
 inducing_pos = new_params['inducing_coords']
 
-new_rmse_train_overall, new_rmse_train_forces = get_variational_rmse(descriptor_fn, rbf, train_pos, train_pos, inducing_pos, train_F, train_F, 0.01, l=l)
-new_rmse_test_overall, new_rmse_test_forces = get_variational_rmse(descriptor_fn, rbf, test_pos, train_pos, inducing_pos, train_F, test_F, 0.01, l=l)
+new_rmse_train_overall, new_rmse_train_forces, new_rmse_train_E= get_variational_rmse(descriptor_fn, rbf, train_pos, train_pos, inducing_pos, train_E, train_E, train_F, train_F, 0.01, l=l)
+new_rmse_test_overall, new_rmse_test_forces, new_rmse_test_E = get_variational_rmse(descriptor_fn, rbf, test_pos, train_pos, inducing_pos, train_E, test_E, train_F, test_F, 0.01, l=l)
 
-print('Done optimizing neg. ELBO')
-print('Train RMSE: %.3f' % new_rmse_train_overall)
-print('Test RMSE: %.3f' % new_rmse_test_overall)
+print('Force train RMSE: %.3f' % new_rmse_train_overall)
+print('Force test RMSE: %.3f' % new_rmse_test_overall)
+print('Energy train RMSE: %.3f' % new_rmse_train_E)
+print('Energy test RMSE: %.3f' % new_rmse_test_E)
 
 plt.figure()
 plt.plot(train_ind, rmse_train_forces, color='tab:blue', linestyle='--')

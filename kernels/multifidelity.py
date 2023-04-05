@@ -6,11 +6,6 @@ from functools import partial
 from typing import Callable
 
 
-def _normal_sample(mu, var, rng_key):
-    new_key, subkey = jax.random.split(rng_key)
-    return mu + jax.random.normal(subkey, mu.shape) * jnp.sqrt(var), new_key
-
-
 def perdikaris_kernel(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, f_x1, f_x2, lp, lf, ld):
     return kernel_fn(x1, x2, lp) * kernel_fn(f_x1, f_x2, lf) + kernel_fn(x1, x2, ld)
 
