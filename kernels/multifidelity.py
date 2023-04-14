@@ -1,11 +1,13 @@
+import pdb
 import jax
-from jax import vmap
+from jax import vmap, jit
 import jax.numpy as jnp
 from .hess import bilinear_hess, jac_K, flatten
 from functools import partial
 from typing import Callable
 
 
+@partial(jit, static_argnums=0)
 def perdikaris_kernel(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, f_x1, f_x2, lp, lf, ld):
     return kernel_fn(x1, x2, lp) * kernel_fn(f_x1, f_x2, lf) + kernel_fn(x1, x2, ld)
 
@@ -56,7 +58,7 @@ def get_diag_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.n
 
 
 def get_full_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.array, E_sample_x1, E_sample_x2, iterative=False, **kernel_kwargs) -> jnp.ndarray:
-    K = jax.lax.cond(iterative, partial(_get_full_K, kernel_fn, **kernel_kwargs), partial(_get_full_K_iterative, kernel_fn, **kernel_kwargs), x1, x2, dx1, dx2, E_sample_x1, E_sample_x2)
+    K = jax.lax.cond(iterative, partial(_get_full_K_iterative, kernel_fn, **kernel_kwargs), partial(_get_full_K, kernel_fn, **kernel_kwargs), x1, x2, dx1, dx2, E_sample_x1, E_sample_x2)
     #K = jax.lax.cond(iterative, _get_full_K, _get_full_K_iterative, kernel_fn, x1, x2, dx1, dx2, E_sample_x1, E_sample_x2, **kernel_kwargs)
     #K = _get_full_K(kernel_fn, x1, x2, dx1, dx2, E_sample_x1, E_sample_x2, **kernel_kwargs)
     m1, m2, d1, d2 = K.shape
@@ -69,6 +71,7 @@ def _get_full_K_iterative(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray,
     """
     k_fn = partial(perdikaris_kernel, kernel_fn, **kernel_kwargs)
     vec_over_x2 = vmap(get_K, in_axes=(None, None, 0, None, 0, None, 0), out_axes=0)
+    #pdb.set_trace()
     def calc_row(i, val):
         val = val.at[i].set(vec_over_x2(k_fn, x1[i], x2, dx1[i], dx2, E_sample_x1[i], E_sample_x2))
         return val

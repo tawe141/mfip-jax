@@ -1,5 +1,7 @@
+import pdb
 from models.exact import *
 from models.sparse import *
+import models.multifidelity as mf
 import pytest
 from data.md17 import get_molecules
 from descriptors.inv_dist import inv_dist
@@ -11,6 +13,12 @@ from sklearn.model_selection import train_test_split
 
 from jax.config import config
 config.update("jax_enable_x64", True)
+
+
+def desc_to_inputs(desc_output):
+    desc, E, F = desc_output
+    x, dx = desc
+    return x, dx, E.flatten(), F.flatten()
 
 
 @pytest.fixture
@@ -26,6 +34,19 @@ def benzene_with_descriptor(benzene_coords):
     return vmap(inv_dist)(pos), E, F
 
 
+@pytest.fixture
+def benzene_ccsd_coords():
+    atoms, E, F, z = get_molecules('raw/benzene_ccsd_t-train.npz', n=10)
+    pos = jnp.stack([a.get_positions() for a in atoms], axis=0)
+    return pos, E, F
+
+
+@pytest.fixture
+def benzene_ccsd_descriptor(benzene_ccsd_coords):
+    pos, E, F = benzene_ccsd_coords
+    return vmap(inv_dist)(pos), E, F
+
+
 def test_exact_predictions(benzene_with_descriptor):
     desc, _, train_y = benzene_with_descriptor
     train_x, train_dx = desc
@@ -37,6 +58,10 @@ def test_exact_predictions(benzene_with_descriptor):
         assert jnp.allclose(var, 0.0)
 
 
+def test_exact_predictions_cc(benzene_ccsd_descriptor):
+    test_exact_predictions(benzene_ccsd_descriptor)
+
+
 def test_exact_energy_predict(benzene_with_descriptor):
     desc, E, train_y = benzene_with_descriptor
     train_x, train_dx = desc
@@ -45,8 +70,13 @@ def test_exact_energy_predict(benzene_with_descriptor):
     with disable_jit():
         mu, var = gp_predict_energy(train_x, train_dx, train_x, train_dx, train_y, rbf, l=1.0)
         #assert jnp.allclose(var, 0.0)  # variance comes out to be a constant ~0.4 here, and I'm not sure why... considering this still <1kcal/mol error, maybe this isn't so bad?
-        energy_diff = jnp.mean(E - mu)
-        assert jnp.allclose(E, mu + energy_diff)
+        #pdb.set_trace()
+        E_predict = gp_correct_energy(mu, E) 
+        assert jnp.allclose(E, E_predict)
+
+
+def test_exact_energy_predict_cc(benzene_ccsd_descriptor):
+    test_exact_energy_predict(benzene_ccsd_descriptor)
 
 
 def test_kernel_matrices(benzene_with_descriptor):
@@ -124,8 +154,8 @@ def test_variational_posterior_energy(benzene_coords):
     assert mu.shape == (10,)
     assert var.shape == (10,)
 
-    energy_diff = jnp.mean(E - mu)
-    assert jnp.allclose(mu + energy_diff, E)
+    E_predict = gp_correct_energy(mu, E)
+    assert jnp.allclose(E_predict, E)
     assert jnp.all(var > 0)
 
 
@@ -140,8 +170,12 @@ def test_vposterior_energy_force(benzene_coords):
     assert jnp.all(F_var >= 0.0)
     assert E.shape == E_mu.shape
     assert jnp.all(E_var >= 0.0)
-    energy_diff = jnp.mean(E - E_mu)
-    assert jnp.allclose(E_mu + energy_diff, E)
+    E_predict = gp_correct_energy(E_mu, E)
+    assert jnp.allclose(E_predict, E)
+
+
+def test_vposterior_energy_force_cc(benzene_ccsd_coords):
+    test_vposterior_energy_force(benzene_ccsd_coords)
 
 
 def test_optimizing_variational(benzene_coords):
@@ -170,11 +204,38 @@ def test_optimizing_variational(benzene_coords):
     assert not jnp.allclose(new_params['inducing_coords'], inducing_pos)
     assert not jnp.allclose(new_params['l'], 1.0)
 
-# def test_grad_variational_elbo(benzene_coords):
-#     # gradient of the elbo when inducing points is the same as the training set
-#     # should in principle be 0. I think. :)
-#     pos, F = benzene_coords
-#     train_y = F.flatten()
-#     grad_neg_elbo = grad(neg_elbo_from_coords, argnums=3)
-#     ne = grad_neg_elbo(vmap(inv_dist), rbf, pos, pos, train_y, 0.01, l=1.0)
-#     assert jnp.allclose(ne, 0.0)
+
+def test_mf_step(benzene_with_descriptor, benzene_ccsd_descriptor):
+    x_dft, dx_dft, E_dft, y_dft = desc_to_inputs(benzene_with_descriptor)
+    x_cc, dx_cc, E_cc, y_cc = desc_to_inputs(benzene_ccsd_descriptor)
+
+    """
+    # take inducing points to be a few of the DFT configurations
+    inducing_x = x_dft[::2]
+    inducing_dx = dx_dft[::2]
+    #pdb.set_trace()
+    """
+    # take inducing points to be a few of the CC configurations, which are more diverse
+    inducing_x = x_cc[::2]
+    inducing_dx = dx_cc[::2]
+
+    def get_energy(x, dx):
+        k_mats = get_kernel_matrices_energy(rbf, x_dft, dx_dft, inducing_x, inducing_dx, x, dx, l=1.0)
+        return vposterior_from_matrices(*k_mats, y_dft, 0.001)
+
+    # test set (CC data)
+    E_test, _ = get_energy(x_cc, dx_cc)
+    E_train, _ = get_energy(x_cc, dx_cc)  # same as E_test
+    E_inducing, _ = get_energy(inducing_x, inducing_dx)
+    E_var_test = jnp.zeros_like(E_test)  # placeholder
+    E_var_train = jnp.zeros_like(E_train)
+    E_var_inducing = jnp.zeros_like(E_inducing)
+    # set lp and lf to near zero, making it really improbably it's using the previous fidelity
+    E, F = mf.mf_step_E(rbf, x_cc, dx_cc, x_cc, dx_cc, inducing_x, inducing_dx, E_train, E_var_train, E_test, E_var_test, E_inducing, E_var_inducing, y_cc, 0.001, lp=1e-5, lf=1e-5, ld=1.0)
+
+    E_mu_train, E_var_train, E_mu_test, E_var_test, E_mu_inducing, E_var_inducing = E
+    F_mu_train, F_var_train, F_mu_test, F_var_test, F_mu_inducing, F_var_inducing = F
+
+    c = jnp.mean(E_mu_train + E_cc.flatten())
+    #pdb.set_trace()
+    assert jnp.allclose(c - E_mu_train, E_cc)
