@@ -91,18 +91,23 @@ def get_kernel_matrices_energy_force(kernel_fn, train_x, train_dx, inducing_x, i
 
 
 def vposterior_from_matrices(K_mm, K_mn, K_test_m, K_test_diag, train_y, sigma_y):
-    jitter = 1e-8 * jnp.eye(len(K_mm))
+    jitter = 1e-6 * jnp.eye(len(K_mm))
     
     L = jnp.linalg.cholesky(K_mm + jitter)
 
-    A = solve_triangular(L, K_mn, lower=True) / sigma_y
+    A = solve_triangular(L, K_mn / sigma_y, lower=True)
     B = A @ A.T + jnp.eye(len(A))
     L_B = jnp.linalg.cholesky(B)
-    c = solve_triangular(L_B, A.dot(train_y), lower=True) / sigma_y
-
+    
+    c = solve_triangular(L_B, A.dot(train_y / sigma_y), lower=True)
+    """
     mu = K_test_m @ solve_triangular(
         L.T, solve_triangular(L_B.T, c, lower=False), lower=False
     )
+    """
+    tmp1 = solve_triangular(L, K_test_m.T, lower=True)
+    tmp2 = solve_triangular(L_B, tmp1, lower=True)
+    mu = tmp2.T @ c
 
     L_inv_K_m_test = solve_triangular(L, K_test_m.T, lower=True)
     LB_inv_L_inv_K_m_test = solve_triangular(L_B, L_inv_K_m_test, lower=True)
@@ -121,6 +126,7 @@ def vposterior_from_matrices_energy_forces(K_mm, K_mn, K_test_m_E, K_test_m_F, K
     A = solve_triangular(L, K_mn, lower=True) / sigma_y
     B = A @ A.T + jnp.eye(len(A))
     L_B = jnp.linalg.cholesky(B)
+    #pdb.set_trace()
     c = solve_triangular(L_B, A.dot(train_y), lower=True) / sigma_y
 
     alpha = solve_triangular(

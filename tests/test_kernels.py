@@ -154,6 +154,12 @@ def test_perdikaris(random_vec):
     assert K_hess.shape == (8, 8)
     assert jnp.all(jnp.linalg.eigvalsh(K_hess + 1e-8 * jnp.eye(8, 8)) >= 0.0)
 
+    k_fn = partial(mf.perdikaris_kernel, rbf, lp=1e-5, lf=1e-5, ld=1.0)
+
+    K = k_fn(a, a, 1.0, 1.0)
+    assert jnp.allclose(K, 2.0)
+    
+
 
 def test_multifidelity_get_K_batch(random_batch):
     a = random_batch

@@ -2,6 +2,7 @@ import pdb
 from models.exact import *
 from models.sparse import *
 import models.multifidelity as mf
+import models.exact_mf as emf
 import pytest
 from data.md17 import get_molecules
 from descriptors.inv_dist import inv_dist
@@ -31,6 +32,19 @@ def benzene_coords():
 @pytest.fixture
 def benzene_with_descriptor(benzene_coords):
     pos, E, F = benzene_coords
+    return vmap(inv_dist)(pos), E, F
+
+
+@pytest.fixture
+def benzene_coords_many():
+    atoms, E, F, z = get_molecules('raw/benzene2017_dft.npz', n=1000, shuffle=True)
+    pos = jnp.stack([a.get_positions() for a in atoms], axis=0)
+    return pos, E, F
+
+
+@pytest.fixture
+def benzene_with_descriptor_many(benzene_coords_many):
+    pos, E, F = benzene_coords_many
     return vmap(inv_dist)(pos), E, F
 
 
@@ -144,6 +158,10 @@ def test_variational_posterior(benzene_coords):
     assert jnp.allclose(var, 0.0, atol=1e-5)
 
 
+def test_variational_posterior_cc(benzene_ccsd_coords):
+    test_variational_posterior(benzene_ccsd_coords)
+
+
 def test_variational_posterior_energy(benzene_coords):
     pos, E, F = benzene_coords
     train_y = F.flatten()
@@ -162,10 +180,11 @@ def test_variational_posterior_energy(benzene_coords):
 def test_vposterior_energy_force(benzene_coords):
     pos, E, F = benzene_coords
     train_y = F.flatten()
-    inducing_pos = pos[::2]
+    inducing_pos = pos
     E = E.flatten()
-    E_mu, E_var, F_mu, F_var = variational_posterior_energy_force(vmap(inv_dist), rbf, pos, pos, inducing_pos, train_y, 0.001, l=1.0)
+    E_mu, E_var, F_mu, F_var = variational_posterior_energy_force(vmap(inv_dist), rbf, pos, pos, inducing_pos, train_y, 0.001, l=0.1)
     
+    #pdb.set_trace()
     assert jnp.allclose(train_y, F_mu, atol=1e-1)
     assert jnp.all(F_var >= 0.0)
     assert E.shape == E_mu.shape
@@ -205,22 +224,16 @@ def test_optimizing_variational(benzene_coords):
     assert not jnp.allclose(new_params['l'], 1.0)
 
 
-def test_mf_step(benzene_with_descriptor, benzene_ccsd_descriptor):
-    x_dft, dx_dft, E_dft, y_dft = desc_to_inputs(benzene_with_descriptor)
+def test_mf_step(benzene_with_descriptor_many, benzene_ccsd_descriptor):
+    x_dft, dx_dft, E_dft, y_dft = desc_to_inputs(benzene_with_descriptor_many)
     x_cc, dx_cc, E_cc, y_cc = desc_to_inputs(benzene_ccsd_descriptor)
 
-    """
     # take inducing points to be a few of the DFT configurations
-    inducing_x = x_dft[::2]
-    inducing_dx = dx_dft[::2]
-    #pdb.set_trace()
-    """
-    # take inducing points to be a few of the CC configurations, which are more diverse
-    inducing_x = x_cc[::2]
-    inducing_dx = dx_cc[::2]
+    inducing_x = x_dft[::20]
+    inducing_dx = dx_dft[::20]
 
     def get_energy(x, dx):
-        k_mats = get_kernel_matrices_energy(rbf, x_dft, dx_dft, inducing_x, inducing_dx, x, dx, l=1.0)
+        k_mats = get_kernel_matrices_energy(rbf, x_dft, dx_dft, inducing_x, inducing_dx, x, dx, l=0.1)
         return vposterior_from_matrices(*k_mats, y_dft, 0.001)
 
     # test set (CC data)
@@ -231,11 +244,25 @@ def test_mf_step(benzene_with_descriptor, benzene_ccsd_descriptor):
     E_var_train = jnp.zeros_like(E_train)
     E_var_inducing = jnp.zeros_like(E_inducing)
     # set lp and lf to near zero, making it really improbably it's using the previous fidelity
-    E, F = mf.mf_step_E(rbf, x_cc, dx_cc, x_cc, dx_cc, inducing_x, inducing_dx, E_train, E_var_train, E_test, E_var_test, E_inducing, E_var_inducing, y_cc, 0.001, lp=1e-5, lf=1e-5, ld=1.0)
+    E, F = mf.mf_step_E(rbf, x_cc, dx_cc, x_cc, dx_cc, inducing_x, inducing_dx, E_train, E_var_train, E_test, E_var_test, E_inducing, E_var_inducing, y_cc, 0.001, lp=1e-5, lf=1e-5, ld=0.1)
 
     E_mu_train, E_var_train, E_mu_test, E_var_test, E_mu_inducing, E_var_inducing = E
     F_mu_train, F_var_train, F_mu_test, F_var_test, F_mu_inducing, F_var_inducing = F
 
     c = jnp.mean(E_mu_train + E_cc.flatten())
-    #pdb.set_trace()
+    pdb.set_trace()
     assert jnp.allclose(c - E_mu_train, E_cc)
+
+
+###
+#Exact multi-fidelity GP
+###
+
+def test_gp_predict_emf(benzene_with_descriptor, benzene_ccsd_descriptor):
+    x_dft, dx_dft, E_dft, y_dft = desc_to_inputs(benzene_with_descriptor)
+    x_cc, dx_cc, E_cc, y_cc = desc_to_inputs(benzene_ccsd_descriptor)
+
+    # first, predict energies of CC points with DFT training data
+    E_cc_from_dft, _ = gp_predict_energy(x_cc, dx_cc, x_dft, dx_dft, y_dft, rbf, l=1.0) 
+    F_mu, F_var = emf.gp_predict(x_cc, dx_cc, E_cc_from_dft, x_cc, dx_cc, E_cc_from_dft, y_cc, rbf, lp=1.0, lf=1.0, ld=1.0)
+    assert jnp.allclose(F_mu, y_cc, atol=0.01)

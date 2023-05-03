@@ -35,6 +35,7 @@ def get_kernel_matrices_energy_force(kernel_fn, train_x, train_dx, inducing_x, i
 
 def vposterior(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, test_x, test_dx, E_train, E_inducing, E_test, train_y, sigma_y, **kernel_kwargs):
     K_matrices = get_kernel_matrices_energy_force(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, test_x, test_dx, E_train, E_inducing, E_test, **kernel_kwargs)
+    pdb.set_trace()
     return vposterior_from_matrices_energy_forces(*K_matrices, train_y, sigma_y)
 
 
