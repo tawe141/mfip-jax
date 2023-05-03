@@ -1,6 +1,5 @@
 import jax.numpy as jnp
 from jax import grad, jit, value_and_grad, vmap
-from utils.safe_cholesky import safe_cholesky
 from jax.scipy.linalg import solve, solve_triangular, cho_solve
 from kernels.hess import get_full_K, get_diag_K, get_full_K_iterative, get_jac_K
 from functools import partial

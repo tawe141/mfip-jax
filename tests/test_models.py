@@ -89,6 +89,19 @@ def test_exact_energy_predict(benzene_with_descriptor):
         assert jnp.allclose(E, E_predict)
 
 
+def test_exact_energy_force(benzene_with_descriptor):
+    desc, E, train_y = benzene_with_descriptor
+    train_x, train_dx = desc
+    train_y = train_y.flatten()
+    E = E.flatten()
+
+    (E_mu, E_var), (F_mu, F_var) = gp_energy_force(train_x, train_dx, train_x, train_dx, train_y, rbf, l=1.0)
+    assert jnp.allclose(F_mu, train_y, atol=0.01)
+    assert jnp.allclose(F_var, 0.0, atol=0.001)
+    E_mu = gp_correct_energy(E_mu, E)
+    assert jnp.allclose(E_mu, E)
+
+
 def test_exact_energy_predict_cc(benzene_ccsd_descriptor):
     test_exact_energy_predict(benzene_ccsd_descriptor)
 
