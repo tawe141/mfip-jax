@@ -61,19 +61,33 @@ def benzene_ccsd_descriptor(benzene_ccsd_coords):
     return vmap(inv_dist)(pos), E, F
 
 
-def test_exact_predictions(benzene_with_descriptor):
+def test_exact_predictions_identity(benzene_with_descriptor):
     desc, _, train_y = benzene_with_descriptor
     train_x, train_dx = desc
     train_y = train_y.flatten()
-    with disable_jit():
-        mu, var = gp_predict(train_x, train_dx, train_x, train_dx, train_y, rbf, l=1.0)
-        assert jnp.allclose(train_y, mu, atol=1e-2, rtol=1e-3)
-        assert jnp.all(var >= 0.0)
-        assert jnp.allclose(var, 0.0)
+
+    mu, var = gp_predict(train_x, train_dx, train_x, train_dx, train_y, rbf, l=1.0)
+    assert jnp.allclose(train_y, mu, atol=1e-2, rtol=1e-3)
+    assert jnp.all(var >= 0.0)
+    assert jnp.allclose(var, 0.0)
+
+
+def test_exact_predictions(benzene_with_descriptor, benzene_with_descriptor_many):
+    desc, _, train_y = benzene_with_descriptor
+    train_x, train_dx = desc
+    train_y = train_y.flatten()
+
+    desc, _, test_y = benzene_with_descriptor_many
+    test_x, test_dx = desc
+    test_y = test_y.flatten()
+
+    mu, var = gp_predict(test_x, test_dx, train_x, train_dx, train_y, rbf, l=1.0)
+    assert jnp.all(var >= 0.0)
+    assert len(mu) == len(test_y)
 
 
 def test_exact_predictions_cc(benzene_ccsd_descriptor):
-    test_exact_predictions(benzene_ccsd_descriptor)
+    test_exact_predictions_identity(benzene_ccsd_descriptor)
 
 
 def test_exact_energy_predict(benzene_with_descriptor):

@@ -11,9 +11,52 @@ def flatten(x: jnp.ndarray, m1: int, d1: int, m2: int, d2: int):
     return x.transpose(0,2,1,3).reshape(m1*d1, m2*d2)
 
 
+def gp_predict_from_matrices(K_train, K_test, K_test_test, train_y):
+    """
+    General GP prediction function. Returns mean and variance of predictions
+    """
+    jitter = 1e-8 * jnp.eye(len(K_train))
+    L = jnp.linalg.cholesky(K_train + jitter)
+    alpha = cho_solve((L, True), train_y)
+    #pdb.set_trace()
+    mu = K_test.T @ alpha
+
+    c = solve_triangular(L, K_test, lower=True)
+    var = K_test_test - jnp.sum(jnp.square(c), axis=0)
+    
+    return mu, var
+
+
+def get_force_matrices(test_x: jnp.ndarray, test_dx: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs):
+    """
+    Returns K_train, K_test, K_test_test matrices assuming they will be used for a force calculation
+    """
+    K_train = get_full_K(kernel_fn, train_x, train_x, train_dx, train_dx, **kernel_kwargs)
+    K_test = get_full_K(kernel_fn, test_x, train_x, test_dx, train_dx, **kernel_kwargs).T
+    K_test_test = get_diag_K(kernel_fn, test_x, test_x, test_dx, test_dx, **kernel_kwargs)
+    return K_train, K_test, K_test_test
+
+
+def get_energy_matrices(test_x: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs):	
+    K_train = get_full_K(kernel_fn, train_x, train_x, train_dx, train_dx, **kernel_kwargs)
+    K_test = get_jac_K(kernel_fn, test_x, train_x, train_dx, **kernel_kwargs).T
+    diag_kernel_fn = partial(kernel_fn, **kernel_kwargs)
+    diag_kernel = vmap(diag_kernel_fn, in_axes=(0, 0))
+    K_test_test = diag_kernel(test_x, test_x)
+    return K_train, K_test, K_test_test
+
+
 def gp_predict(test_x: jnp.ndarray, test_dx: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs):
-    # m1, d1, f1 = train_dx.shape
-    # m2, d2, f2 = test_dx.shape
+    matrices = get_force_matrices(test_x, test_dx, train_x, train_dx, train_y, kernel_fn, **kernel_kwargs)
+    return gp_predict_from_matrices(*matrices, train_y)
+
+
+def gp_predict_energy(test_x: jnp.ndarray, test_dx: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs):
+    matrices = get_energy_matrices(test_x, train_x, train_dx, train_y, kernel_fn, **kernel_kwargs)
+    return gp_predict_from_matrices(*matrices, train_y)
+
+"""
+def gp_predict(test_x: jnp.ndarray, test_dx: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs):
     K_train = get_full_K(kernel_fn, train_x, train_x, train_dx, train_dx, **kernel_kwargs)
     jitter = 1e-8 * jnp.eye(len(K_train))
     L = jnp.linalg.cholesky(K_train + jitter)
@@ -41,22 +84,22 @@ def gp_predict_energy(test_x: jnp.ndarray, test_dx: jnp.ndarray, train_x: jnp.nd
 	
     mu = K_test @ alpha
 
-    """
-    batch_K_fn = vmap(
-        vmap(partial(kernel_fn, **kernel_kwargs), in_axes=(None, 0)),
-        in_axes=(0, None)
-    )
+    
+    #batch_K_fn = vmap(
+    #    vmap(partial(kernel_fn, **kernel_kwargs), in_axes=(None, 0)),
+    #    in_axes=(0, None)
+    #)
 
-    K_test_test = batch_K_fn(test_x, test_x) 
-    var = jnp.diag(K_test_test - K_test @ cho_solve((L, True), K_test.T))
-    """
+    #K_test_test = batch_K_fn(test_x, test_x) 
+    #var = jnp.diag(K_test_test - K_test @ cho_solve((L, True), K_test.T))
+    
     c = solve_triangular(L, K_test.T, lower=True)
     diag_kernel_fn = partial(kernel_fn, **kernel_kwargs)
     diag_kernel = vmap(diag_kernel_fn, in_axes=(0, 0))
     var = diag_kernel(test_x, test_x) - jnp.sum(jnp.square(c), axis=0)  # TODO: WRONG IMPLEMENTATION
 
     return mu, var 
-
+"""
 
 def gp_energy_force(test_x: jnp.ndarray, test_dx: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs): 
     K_train = get_full_K(kernel_fn, train_x, train_x, train_dx, train_dx, **kernel_kwargs)
