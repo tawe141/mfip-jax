@@ -293,3 +293,9 @@ def test_gp_predict_emf(benzene_with_descriptor, benzene_ccsd_descriptor):
     E_cc_from_dft, _ = gp_predict_energy(x_cc, dx_cc, x_dft, dx_dft, y_dft, rbf, l=1.0) 
     F_mu, F_var = emf.gp_predict(x_cc, dx_cc, E_cc_from_dft, x_cc, dx_cc, E_cc_from_dft, y_cc, rbf, lp=1.0, lf=1.0, ld=1.0)
     assert jnp.allclose(F_mu, y_cc, atol=0.01)
+    assert jnp.allclose(F_var, 0.0)
+
+    E_mu, E_var = emf.gp_predict_energy(x_cc, dx_cc, E_cc_from_dft, x_cc, dx_cc, E_cc_from_dft, y_cc, rbf, lp=1.0, lf=1.0, ld=1.0)
+    E_mu = gp_correct_energy(E_mu, E_cc)
+    assert jnp.allclose(E_mu, E_cc)
+
