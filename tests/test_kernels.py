@@ -1,5 +1,6 @@
 from kernels.hess import rbf, matern52, explicit_hess, _get_full_K, _get_full_K_iterative, get_K, hvp, bilinear_hess, get_diag_K, get_full_K, jac_K, get_jac_K
 import kernels.multifidelity as mf
+import kernels.perdikaris_mf as pmf
 from jax import vmap, jvp, vjp
 from functools import partial
 import jax 
@@ -17,6 +18,33 @@ def random_vec():
 def random_batch():
     key = jax.random.PRNGKey(42)
     return jax.random.normal(key, shape=(4, 16))
+
+
+@pytest.fixture
+def random_config():
+    key = jax.random.PRNGKey(42)
+    a = jax.random.normal(key, shape=(16,))
+    new_key, subkey = jax.random.split(key)
+    da = jax.random.normal(subkey, shape=(16, 8))
+    new_key, subkey = jax.random.split(new_key)
+    E = jax.random.normal(subkey)
+    new_key, subkey = jax.random.split(new_key)
+    F = jax.random.normal(subkey, shape=(8,))
+    return a, da, E, F
+
+
+@pytest.fixture
+def random_config_batch():
+    b = 4
+    key = jax.random.PRNGKey(42)
+    a = jax.random.normal(key, shape=(b, 16))
+    new_key, subkey = jax.random.split(key)
+    da = jax.random.normal(subkey, shape=(b, 16, 8))
+    new_key, subkey = jax.random.split(new_key)
+    E = jax.random.normal(subkey, shape=(b,))
+    new_key, subkey = jax.random.split(new_key)
+    F = jax.random.normal(subkey, shape=(b, 8))
+    return a, da, E, F
 
 
 def test_matern52(random_vec, random_batch):
@@ -196,5 +224,30 @@ def test_multifidelity_get_K_jac(random_batch):
     assert jac_K.shape == (4, 32)
 
 
-    
+###
+#Perdikaris multifidelity testing
+###
 
+class TestPerdikarisMF:
+    def test_get_K(self, random_config):
+        x, dx, E, F = random_config
+        K = pmf.get_K(rbf, x, x, dx, dx, E, E, F, F, lp={'l': 1.0}, lf={'l': 1.0}, ld={'l': 1.0})
+        assert K.shape == (8, 8)
+    
+    def test_get_K_jac(self, random_config):
+        x, dx, E, F = random_config
+        K = pmf.get_K_jac(rbf, x, x, dx, E, E, F, lp={'l': 1.0}, lf={'l': 1.0}, ld={'l': 1.0})
+        assert K.shape == (8,)
+
+    def test_get_full_K(self, random_config_batch):
+        x, dx, E, F = random_config_batch
+        K = pmf.get_full_K(rbf, x, x, dx, dx, E, E, F, F, lp={'l': 1.0}, lf={'l': 1.0}, ld={'l': 1.0})
+        assert K.shape == (32, 32)
+        assert jnp.all(jnp.linalg.eigvals(K + 1e-8 * jnp.eye(32)) > 0.0)
+        K_iter = pmf.get_full_K(rbf, x, x, dx, dx, E, E, F, F, iterative=True, lp={'l': 1.0}, lf={'l': 1.0}, ld={'l': 1.0})
+        assert jnp.allclose(K, K_iter)
+
+    def test_get_diag_K(self, random_config_batch):
+        x, dx, E, F = random_config_batch
+        K_diag = pmf.get_diag_K(rbf, x, x, dx, dx, E, E, F, F, lp={'l': 1.0}, lf={'l': 1.0}, ld={'l': 1.0})
+        assert K_diag.shape == (32,)
