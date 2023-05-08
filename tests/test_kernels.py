@@ -251,3 +251,9 @@ class TestPerdikarisMF:
         x, dx, E, F = random_config_batch
         K_diag = pmf.get_diag_K(rbf, x, x, dx, dx, E, E, F, F, lp={'l': 1.0}, lf={'l': 1.0}, ld={'l': 1.0})
         assert K_diag.shape == (32,)
+
+    def test_get_jac_K(self, random_config_batch):
+        x, dx, E, F = random_config_batch
+        K_diag = pmf.get_jac_K(rbf, x, x, dx, E, E, F, lp={'l': 1.0}, lf={'l': 1.0}, ld={'l': 1.0})
+        assert K_diag.shape == (4, 32)
+

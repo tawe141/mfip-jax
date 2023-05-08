@@ -95,14 +95,14 @@ def _get_jac_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx2: jnp.a
     Returns the Jacobian of K wrt x2, ie d/dx2 K(x1, x2) in shape (N, N, D, E), where N = # in batch, D is dimensionality of the descriptor, E is the dimensionality of the inputs to the descriptor 
     """
     #K_partial = partial(jac_K, **kernel_kwargs)
-    k_fn = partial(kernel_fn, **kernel_kwargs)
+    get_K_jac_fn = partial(get_K_jac, kernel_fn, **kernel_kwargs)
     func = vmap(
-        vmap(get_K_jac, in_axes=(None, None, 0, 0, None, 0, 0)),
-        in_axes=(None, 0, None, None, 0, None, None)
+        vmap(get_K_jac_fn, in_axes=(None, 0, 0, None, 0, 0)),
+        in_axes=(0, None, None, 0, None, None)
     )
-    return func(k_fn, x1, x2, dx2, E_sample_x1, E_sample_x2)
+    return func(x1, x2, dx2, E_sample_x1, E_sample_x2, F_sample_x2)
 
 
-def get_jac_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx2: jnp.array, E_sample_x1, E_sample_x2, **kernel_kwargs) -> jnp.ndarray:
-    K = _get_jac_K(kernel_fn, x1, x2, dx2, E_sample_x1, E_sample_x2, **kernel_kwargs)
+def get_jac_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx2: jnp.array, E_sample_x1, E_sample_x2, F_sample_x2, **kernel_kwargs) -> jnp.ndarray:
+    K = _get_jac_K(kernel_fn, x1, x2, dx2, E_sample_x1, E_sample_x2, F_sample_x2, **kernel_kwargs)
     return K.reshape(len(x1), len(x2) * dx2.shape[-1])
