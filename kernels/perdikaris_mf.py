@@ -24,8 +24,9 @@ def get_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarra
     grad_k_x1 = grad(kernel_fn, argnums=0)
     grad_k_x2 = grad(kernel_fn, argnums=1)
     hess_k = jacfwd(grad_k_x1, argnums=1)
-    res = jnp.outer(jac_K(kernel_fn, x1, x2, dx2, **lp), grad_k_x1(E_x1, E_x2, **lf) * F_x1)
-    res += jnp.outer(jac_K(kernel_fn, x2, x1, dx1, **lp), grad_k_x2(E_x1, E_x2, **lf) * F_x2)
+    #pdb.set_trace()
+    res = jnp.outer(jac_K(kernel_fn, x1, x2, dx2, **lp), grad_k_x1(E_x1, E_x2, **lf) * -F_x1)
+    res += jnp.outer(jac_K(kernel_fn, x2, x1, dx1, **lp), grad_k_x2(E_x1, E_x2, **lf) * -F_x2)
     res += hess_k(E_x1, E_x2, **lf) * jnp.outer(F_x1, F_x2)
     res += kernel_fn(E_x1, E_x2, **lf) * bilinear_hess(kernel_fn, x1, x2, dx1, dx2, **lp)
     res += bilinear_hess(kernel_fn, x1, x2, dx1, dx2, **ld)
@@ -38,7 +39,7 @@ def get_K_jac(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx2: jnp.ar
     TODO: should this be wrt x2 or x1? here thinking it's dx2
     """
     grad_k = grad(kernel_fn, argnums=1)
-    res = kernel_fn(x1, x2, **lp) * grad_k(E_x1, E_x2, **lf) * F_x2
+    res = kernel_fn(x1, x2, **lp) * grad_k(E_x1, E_x2, **lf) * -F_x2
     res += kernel_fn(E_x1, E_x2, **lf) * jac_K(kernel_fn, x1, x2, dx2, **lp)
     res += jac_K(kernel_fn, x1, x2, dx2, **ld)
     return res
@@ -80,11 +81,11 @@ def _get_full_K_iterative(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray,
     """
     Getting the full kernel matrix can be brutally memory intensive. Iterate over x1/dx1 and build the matrix row-by-row
     """
-    get_K_fn = partial(get_K, **kernel_kwargs)
-    vec_over_x2 = vmap(get_K_fn, in_axes=(None, None, 0, None, 0, None, 0, None, 0), out_axes=0)
+    get_K_fn = partial(get_K, kernel_fn, **kernel_kwargs)
+    vec_over_x2 = vmap(get_K_fn, in_axes=(None, 0, None, 0, None, 0, None, 0), out_axes=0)
     #pdb.set_trace()
     def calc_row(i, val):
-        val = val.at[i].set(vec_over_x2(kernel_fn, x1[i], x2, dx1[i], dx2, E_sample_x1[i], E_sample_x2, F_sample_x1[i], F_sample_x2))
+        val = val.at[i].set(vec_over_x2(x1[i], x2, dx1[i], dx2, E_sample_x1[i], E_sample_x2, F_sample_x1[i], F_sample_x2))
         return val
     init_val = jnp.zeros((len(x1), len(x2), dx1.shape[-1], dx2.shape[-1]))
     return jax.lax.fori_loop(0, len(x1), calc_row, init_val)

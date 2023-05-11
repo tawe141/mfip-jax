@@ -1,4 +1,5 @@
-from kernels.multifidelity import perdikaris_kernel, get_full_K, get_diag_K, get_jac_K
+import pdb
+from kernels.perdikaris_mf import perdikaris_kernel, get_full_K, get_diag_K, get_jac_K
 from models.exact import gp_predict_from_matrices
 from functools import partial
 import jax.numpy as jnp
@@ -7,39 +8,40 @@ from jax.scipy.linalg import solve, cho_solve
 from jax import vmap, jit
 
 
-def get_force_matrices(test_x: jnp.ndarray, test_dx: jnp.ndarray, E_test: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, E_train: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs):
+def get_force_matrices(test_x: jnp.ndarray, test_dx: jnp.ndarray, E_test: jnp.ndarray, F_test: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, E_train: jnp.ndarray, F_train: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs):
     """
     Returns K_train, K_test, K_test_test matrices assuming they will be used for a force calculation
     """
-    K_train = get_full_K(kernel_fn, train_x, train_x, train_dx, train_dx, E_train, E_train, **kernel_kwargs)
-    K_test = get_full_K(kernel_fn, test_x, train_x, test_dx, train_dx, E_test, E_train, **kernel_kwargs).T
-    K_test_test = get_diag_K(kernel_fn, test_x, test_x, test_dx, test_dx, E_test, E_test, **kernel_kwargs)
+    K_train = get_full_K(kernel_fn, train_x, train_x, train_dx, train_dx, E_train, E_train, F_train, F_train, **kernel_kwargs)
+    K_test = get_full_K(kernel_fn, test_x, train_x, test_dx, train_dx, E_test, E_train, F_test, F_train, **kernel_kwargs).T
+    K_test_test = get_diag_K(kernel_fn, test_x, test_x, test_dx, test_dx, E_test, E_test, F_test, F_test, **kernel_kwargs)
     return K_train, K_test, K_test_test
 
 
-def get_energy_matrices(test_x: jnp.ndarray, E_test: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, E_train: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs):	
-    K_train = get_full_K(kernel_fn, train_x, train_x, train_dx, train_dx, E_train, E_train, **kernel_kwargs)
-    K_test = get_jac_K(kernel_fn, test_x, train_x, train_dx, E_test, E_train, **kernel_kwargs).T
+def get_energy_matrices(test_x: jnp.ndarray, E_test: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, E_train: jnp.ndarray, F_train: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs):	
+    K_train = get_full_K(kernel_fn, train_x, train_x, train_dx, train_dx, E_train, E_train, F_train, F_train, **kernel_kwargs)
+    K_test = get_jac_K(kernel_fn, test_x, train_x, train_dx, E_test, E_train, F_train, **kernel_kwargs).T
     diag_kernel_fn = partial(perdikaris_kernel, kernel_fn, **kernel_kwargs)
     diag_kernel = vmap(diag_kernel_fn, in_axes=(0, 0, 0, 0))
     K_test_test = diag_kernel(test_x, test_x, E_test, E_test)
     return K_train, K_test, K_test_test
 
 
-def gp_predict(test_x: jnp.ndarray, test_dx: jnp.ndarray, E_test: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, E_train: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs):
-    matrices = get_force_matrices(test_x, test_dx, E_test, train_x, train_dx, E_train, train_y, kernel_fn, **kernel_kwargs)
+def gp_predict(test_x: jnp.ndarray, test_dx: jnp.ndarray, E_test: jnp.ndarray, F_test: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, E_train: jnp.ndarray, F_train: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs):
+    matrices = get_force_matrices(test_x, test_dx, E_test, F_test, train_x, train_dx, E_train, F_train, train_y, kernel_fn, **kernel_kwargs)
+    pdb.set_trace()
     return gp_predict_from_matrices(*matrices, train_y)
 
 
-def gp_predict_energy(test_x: jnp.ndarray, test_dx: jnp.ndarray, E_test: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, E_train: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs):
-    matrices = get_energy_matrices(test_x, E_test, train_x, train_dx, E_train, train_y, kernel_fn, **kernel_kwargs)
+def gp_predict_energy(test_x: jnp.ndarray, test_dx: jnp.ndarray, E_test: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, E_train: jnp.ndarray, F_train: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs):
+    matrices = get_energy_matrices(test_x, E_test, train_x, train_dx, E_train, F_train, train_y, kernel_fn, **kernel_kwargs)
     return gp_predict_from_matrices(*matrices, train_y)
 
 
-def gp_energy_force(test_x: jnp.ndarray, test_dx: jnp.ndarray, E_test: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, E_train: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs): 
+def gp_energy_force(test_x: jnp.ndarray, test_dx: jnp.ndarray, E_test: jnp.ndarray, F_test: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, E_train: jnp.ndarray, F_train: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs): 
     # definitely not the most efficient way to go about this. can do this in principle with a single cholesky decomp, whereas here we're doing it twice...
-    return gp_predict(test_x, test_dx, E_test, train_x, train_dx, E_train, train_y, kernel_fn, **kernel_kwargs), \
-        gp_predict_energy(test_x, test_dx, E_test, train_x, train_dx, E_train, train_y, kernel_fn, **kernel_kwargs)
+    return gp_predict(test_x, test_dx, E_test, F_test, train_x, train_dx, E_train, F_train, train_y, kernel_fn, **kernel_kwargs), \
+        gp_predict_energy(test_x, test_dx, E_test, train_x, train_dx, E_train, F_train, train_y, kernel_fn, **kernel_kwargs)
 
 """
 def gp_predict(test_x: jnp.ndarray, test_dx: jnp.ndarray, E_test: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, E_train: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs):

@@ -1,11 +1,20 @@
-from kernels.hess import rbf, matern52, explicit_hess, _get_full_K, _get_full_K_iterative, get_K, hvp, bilinear_hess, get_diag_K, get_full_K, jac_K, get_jac_K
+import pdb
+from models.exact import gp_predict_energy
+from kernels.hess import rbf, matern52, explicit_hess, _get_full_K, _get_full_K_iterative, get_K, hvp, bilinear_hess, get_diag_K, get_full_K, jac_K, get_jac_K, flatten
+from .test_models import benzene_with_descriptor, benzene_ccsd_descriptor, desc_to_inputs, benzene_coords, benzene_ccsd_coords
+from descriptors.inv_dist import _inv_dist, inv_dist
+from kernels.auto_hess import kernel_with_descriptor, finite_diff_dk_dx2, finite_diff_hess_k
 import kernels.multifidelity as mf
 import kernels.perdikaris_mf as pmf
-from jax import vmap, jvp, vjp
+from jax import vmap, jvp, vjp, disable_jit, jacfwd, jacrev, grad, jit
 from functools import partial
 import jax 
 import jax.numpy as jnp
 import pytest
+
+
+def check_psd(A):
+    return jnp.all(jnp.linalg.eigvalsh(A + 1e-8 * jnp.eye(len(A))) > 0.0)
 
 
 @pytest.fixture
@@ -45,6 +54,17 @@ def random_config_batch():
     new_key, subkey = jax.random.split(new_key)
     F = jax.random.normal(subkey, shape=(b, 8))
     return a, da, E, F
+
+
+@pytest.fixture
+def pair_configs(benzene_ccsd_coords):
+    i, j = 0, 1
+    pos, E, F = benzene_ccsd_coords
+    p1, p2 = pos[i], pos[j]
+    E1, E2 = E[i], E[j]
+    F1, F2 = F[i].flatten(), F[j].flatten()
+
+    return (p1, E1, F1), (p2, E2, F2)
 
 
 def test_matern52(random_vec, random_batch):
@@ -140,6 +160,42 @@ def test_bilinear_hess(random_vec):
     assert jnp.allclose(res, da.T @ H @ db)
 
 
+def test_bilinear_hess_real(pair_configs):
+    (p1, E1, F1), (p2, E2, F2) = pair_configs
+    x1, dx1 = inv_dist(p1)
+    x2, dx2 = inv_dist(p2)
+
+    K = bilinear_hess(rbf, x1, x2, dx1, dx2, l=1.0)
+    partial_f = partial(kernel_with_descriptor, rbf, _inv_dist, l=1.0)
+    fd_K = finite_diff_hess_k(partial_f, p1, p2).reshape(36, 36)
+
+    assert jnp.allclose(K, fd_K, rtol=1e-3)
+
+"""
+def test_bilinear_hess_desc(benzene_ccsd_descriptor, benzene_ccsd_coords):
+    x, E, F = benzene_ccsd_coords
+    desc, E, F = benzene_ccsd_descriptor
+    a, da = desc
+
+    res = get_full_K(rbf, a, a, da, da, l=1.0)
+    assert jnp.all(jnp.linalg.eigvalsh(res + 1e-8 * jnp.eye(len(res))) > 0.0)
+    # ground truth via autograd
+    k_truth = partial(kernel_with_descriptor, rbf, _inv_dist)
+    hess_truth = jacfwd(grad(k_truth, argnums=1), argnums=0)
+    i, j = 0, 1
+    res = bilinear_hess(rbf, a[i], a[i], da[i], da[i], l=1.0)
+    truth = hess_truth(x[i], x[i], l=1.0)
+    #pdb.set_trace()
+    assert jnp.allclose(res, truth.reshape(36, 36))
+
+    res = bilinear_hess(rbf, a[i], a[j], da[i], da[j], l=1.0)
+    pdb.set_trace()
+    truth = hess_truth(x[i], x[j], l=1.0).reshape(36, 36)
+    assert jnp.all(jnp.linalg.eigvalsh(truth + 1e-8 * jnp.eye(len(truth))) > 0.0)
+    assert jnp.all(jnp.linalg.eigvalsh(res + 1e-8 * jnp.eye(len(res))) > 0.0)
+    assert jnp.allclose(res, truth)
+"""
+
 def test_iterative_K(random_batch):
     a = random_batch
     key = jax.random.PRNGKey(11)
@@ -151,6 +207,21 @@ def test_iterative_K(random_batch):
     assert jnp.allclose(K, iter_K)
 
 
+def test_get_full_K(random_batch):
+    a = random_batch
+    key = jax.random.PRNGKey(11)
+    da = jax.random.normal(key, shape=(4, 16, 8))
+    
+    K = get_full_K(rbf, a, a, da, da, l=1.0)
+    assert check_psd(K)
+
+
+def test_get_full_K_real(benzene_ccsd_descriptor):
+    x, dx, E, y = desc_to_inputs(benzene_ccsd_descriptor)
+    K = get_full_K(rbf, x, x, dx, dx, l=1.0)
+    assert check_psd(K)
+
+
 def test_jac_K(random_vec):
     a = random_vec
     key = jax.random.PRNGKey(11)
@@ -158,6 +229,18 @@ def test_jac_K(random_vec):
 
     j = jac_K(rbf, a, a, da, l=1.0)
     assert jnp.allclose(j, jnp.zeros(8))
+
+
+def test_jac_K_real(pair_configs):
+    (p1, E1, F1), (p2, E2, F2) = pair_configs
+    x1, dx1 = inv_dist(p1)
+    x2, dx2 = inv_dist(p2)
+
+    K = jac_K(rbf, x1, x2, dx2, l=1.0)
+    partial_f = partial(kernel_with_descriptor, rbf, _inv_dist, l=1.0)
+    fd_K = finite_diff_dk_dx2(partial_f, p1, p2).flatten()
+
+    assert jnp.allclose(K, fd_K, rtol=1e-3)
 
 
 def test_jac_K_batch(random_batch):
@@ -229,15 +312,74 @@ def test_multifidelity_get_K_jac(random_batch):
 ###
 
 class TestPerdikarisMF:
+    def desc_perdikaris(self, p1, p2, x_train, dx_train, E_train, F_train, lp, lf, ld):
+        x1, dx1 = inv_dist(p1)
+        x1, dx1 = jnp.expand_dims(x1, 0), jnp.expand_dims(dx1, 0)
+        x2, dx2 = inv_dist(p2)
+        x2, dx2 = jnp.expand_dims(x2, 0), jnp.expand_dims(dx2, 0)
+        
+        # make an energy prediction. E must change with p1 and p2!
+
+        #pdb.set_trace()
+        E1, _ = gp_predict_energy(x1, dx1, x_train, dx_train, F_train.flatten(), rbf, l=1.0)
+        E2, _ = gp_predict_energy(x2, dx2, x_train, dx_train, F_train.flatten(), rbf, l=1.0)
+        return rbf(x1, x2, lp) * rbf(E1, E2, lf) + rbf(x1, x2, ld)
+
     def test_get_K(self, random_config):
         x, dx, E, F = random_config
         K = pmf.get_K(rbf, x, x, dx, dx, E, E, F, F, lp={'l': 1.0}, lf={'l': 1.0}, ld={'l': 1.0})
         assert K.shape == (8, 8)
+
+    def test_get_K_real(self, pair_configs, benzene_ccsd_descriptor):
+        (p1, E1, F1), (p2, E2, F2) = pair_configs
+
+        (x, dx), E, F = benzene_ccsd_descriptor
+
+        #k_fn = jit(partial(pmf.perdikaris_kernel, rbf, f_x1=E1, f_x2=E2, lp=1.0, lf=1.0, ld=1.0))
+        #k_w_desc = partial(kernel_with_descriptor, pmf.perdikaris_kernel, _inv_dist) 
+        k_fn = partial(self.desc_perdikaris, x_train=x, dx_train=dx, E_train=E, F_train=F.flatten(), lp=1.0, lf=1.0, ld=1.0)
+        fd_hess = finite_diff_hess_k(k_fn, p1, p2).reshape(36, 36).T
+        autograd_jac = jacfwd(grad(k_fn, argnums=1), argnums=0)(p1, p2).reshape(36, 36)
+
+        assert jnp.allclose(fd_hess, autograd_jac, rtol=1e-3)
+
+        x1, dx1 = inv_dist(p1)
+        x2, dx2 = inv_dist(p2)
+
+        K = pmf.get_K(rbf, x1, x2, dx1, dx2, E1, E2, F1, F2, lp={'l': 1.0}, lf={'l': 1.0}, ld={'l': 1.0})
+
+        jnp.allclose(K, autograd_jac)
     
     def test_get_K_jac(self, random_config):
         x, dx, E, F = random_config
         K = pmf.get_K_jac(rbf, x, x, dx, E, E, F, lp={'l': 1.0}, lf={'l': 1.0}, ld={'l': 1.0})
         assert K.shape == (8,)
+
+        # check via autograd
+        k_fn = partial(pmf.perdikaris_kernel, rbf, f_x1=E, f_x2=E, lp=1.0, lf=1.0, ld=1.0)
+        dk_dx2 = grad(k_fn, argnums=1)
+        auto_K = dk_dx2(x, x) @ dx
+        assert jnp.allclose(K, auto_K)
+
+    def test_get_K_jac_real(self, pair_configs, benzene_ccsd_descriptor):
+        (p1, E1, F1), (p2, E2, F2) = pair_configs
+
+        (x, dx), E, F = benzene_ccsd_descriptor
+
+        #k_fn = jit(partial(pmf.perdikaris_kernel, rbf, f_x1=E1, f_x2=E2, lp=1.0, lf=1.0, ld=1.0))
+        #k_w_desc = partial(kernel_with_descriptor, pmf.perdikaris_kernel, _inv_dist) 
+        k_fn = partial(self.desc_perdikaris, x_train=x, dx_train=dx, E_train=E, F_train=F.flatten(), lp=1.0, lf=1.0, ld=1.0)
+        fd_jac = finite_diff_dk_dx2(k_fn, p1, p2).flatten()
+        autograd_jac = grad(k_fn, argnums=1)(p1, p2).flatten()
+
+        assert jnp.allclose(fd_jac, autograd_jac, rtol=1e-3)
+
+        x1, dx1 = inv_dist(p1)
+        x2, dx2 = inv_dist(p2)
+
+        K = pmf.get_K_jac(rbf, x1, x2, dx2, E1, E2, F2, lp={'l': 1.0}, lf={'l': 1.0}, ld={'l': 1.0})
+
+        assert jnp.allclose(K, fd_jac, rtol=5e-2)
 
     def test_get_full_K(self, random_config_batch):
         x, dx, E, F = random_config_batch
@@ -246,6 +388,27 @@ class TestPerdikarisMF:
         assert jnp.all(jnp.linalg.eigvals(K + 1e-8 * jnp.eye(32)) > 0.0)
         K_iter = pmf.get_full_K(rbf, x, x, dx, dx, E, E, F, F, iterative=True, lp={'l': 1.0}, lf={'l': 1.0}, ld={'l': 1.0})
         assert jnp.allclose(K, K_iter)
+
+    def test_get_full_K_real(self, benzene_with_descriptor, benzene_ccsd_descriptor):
+        x_dft, dx_dft, E_dft, y_dft = desc_to_inputs(benzene_with_descriptor)
+        x_cc, dx_cc, E_cc, y_cc = desc_to_inputs(benzene_ccsd_descriptor)
+
+        # assumes previous fidelity predicts energies and forces perfectly
+        F_cc = y_cc.reshape(len(x_cc), -1)
+        with disable_jit():
+            ## try it on a single sample
+            #i = 0
+            #j = 1
+            #same_K = pmf.get_K(rbf, x_cc[i], x_cc[i], dx_cc[i], dx_cc[i], E_cc[i], E_cc[i], F_cc[i], F_cc[i], lp={'l': 1.0}, lf={'l': 1.0}, ld={'l': 1.0})
+            #assert check_psd(same_K)
+
+            #diff_K = pmf.get_K(rbf, x_cc[i], x_cc[j], dx_cc[i], dx_cc[j], E_cc[i], E_cc[j], F_cc[i], F_cc[j], lp={'l': 1.0}, lf={'l': 1.0}, ld={'l': 1.0})
+            #assert check_psd(diff_K)
+
+            K_ideal = pmf.get_full_K(rbf, x_cc, x_cc, dx_cc, dx_cc, E_cc, E_cc, F_cc, F_cc, lp={'l': 1.0}, lf={'l': 1.0}, ld={'l': 1.0})
+            assert jnp.all(jnp.linalg.eigvalsh(K_ideal + 1e-8 * jnp.eye(len(K_ideal))) > 0.0)
+
+        # now try to make actual predictions and make the kernel matrix
 
     def test_get_diag_K(self, random_config_batch):
         x, dx, E, F = random_config_batch
