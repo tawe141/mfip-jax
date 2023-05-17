@@ -130,5 +130,6 @@ def gp_energy_force(test_x: jnp.ndarray, test_dx: jnp.ndarray, train_x: jnp.ndar
 
 def gp_correct_energy(E_predict, E_ref):
     # finds integration constant and returns energy
-    c = jnp.mean(E_predict + E_ref)
-    return c - E_predict
+    #pdb.set_trace()
+    c = jnp.mean(E_predict - E_ref)
+    return E_predict - c
