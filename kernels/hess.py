@@ -71,6 +71,16 @@ def jac_K(kernel_fn, x1, x2, dx2, **kernel_kwargs):
     return jvp_columnwise(dx2)
 
 
+def jac_K_dx1(kernel_fn, x1, dx1, x2, **kernel_kwargs):
+    """
+    Calculates d/dx1 K(x1, x2)
+    """
+    partial_kernel = partial(kernel_fn, x2=x2, **kernel_kwargs)
+    jvp_col = lambda a: jvp(partial_kernel, (x1, ), (a, ))[1]
+    jvp_columnwise = vmap(jvp_col, in_axes=1)
+    return jvp_columnwise(dx1)
+
+
 def bilinear_hess(kernel_fn, x1, x2, dx1, dx2, **kernel_kwargs):
     """
     Calculates the Hessian kernel d2/dx1dx2 K(x1, x2) using JAX's JVP primitives
@@ -86,9 +96,15 @@ def bilinear_hess(kernel_fn, x1, x2, dx1, dx2, **kernel_kwargs):
     """
     #partial_jac = partial(jac_x2_vec_dot, kernel_fn, x2=x2, dx2=dx2, **kernel_kwargs)
     partial_jac = partial(jac_K, kernel_fn, x2=x2, dx2=dx2, **kernel_kwargs)
+    
     jvp_col = lambda a: jvp(partial_jac, (x1, ), (a, ))[1]
     jvp_columnwise = vmap(jvp_col, in_axes=1)
     return jvp_columnwise(dx1)
+    
+    ## vjp technically isn't the most performant thing to do here I think, but the math makes more sense in my head
+    #vjp_fn = vjp(partial_jac, x1)[1]
+    #vjp_col = lambda a: vjp_fn(a)
+    #vjp_columnwise = vmap(
 
 
 def explicit_hess_fn(kernel_fn: Callable) -> Callable:
@@ -128,10 +144,17 @@ def get_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarra
 def _get_full_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.array, **kernel_kwargs) -> jnp.ndarray:
     # kernel_kwargs['kernel_fn'] = kernel_fn
     K_partial = partial(get_K, **kernel_kwargs)
+    """
     func = vmap(
         vmap(K_partial, in_axes=(None, None, 0, None, 0), out_axes=0),
         in_axes=(None, 0, None, 0, None),
         out_axes=0
+    )
+    """
+    func = vmap(
+        vmap(K_partial, in_axes=(None, 0, None, 0, None)),
+        in_axes=(None, None, 0, None, 0),
+        out_axes=1
     )
     # return func(x1=x1, x2=x2, dx1=dx1, dx2=dx2)
     return func(kernel_fn, x1, x2, dx1, dx2)

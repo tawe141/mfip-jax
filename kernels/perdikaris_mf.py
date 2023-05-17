@@ -1,8 +1,8 @@
 import pdb
 import jax
-from jax import vmap, jit, grad, jacfwd
+from jax import vmap, jit, grad, jacfwd, jvp
 import jax.numpy as jnp
-from .hess import bilinear_hess, jac_K, flatten
+from .hess import bilinear_hess, jac_K, jac_K_dx1, flatten
 from functools import partial
 from typing import Callable
 
@@ -12,28 +12,32 @@ def perdikaris_kernel(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, f_x
     return kernel_fn(x1, x2, lp) * kernel_fn(f_x1, f_x2, lf) + kernel_fn(x1, x2, ld)
 
 
-def get_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.array, E_x1, E_x2, F_x1, F_x2, lp, lf, ld) -> jnp.ndarray:
-    """
-    Copied over from `kernels/hess.py`. 
+#def get_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.array, E_x1, E_x2, F_x1, F_x2, lp, lf, ld) -> jnp.ndarray:
+#    """
+#    Copied over from `kernels/hess.py`. 
+#
+#    Finds the Hessian of the kernel matrix for a single sample `x1` and `x2`. Additional positional arguments 
+#    for Monte Carlo samples of the energy evaluation, as necessary for the multifidelity kernel.
+#
+#    TODO: is this function really necessary? If it isn't, we could re-use a lot of the code developed for normal cov matrices
+#    """
+#    grad_k_x1 = grad(kernel_fn, argnums=0)
+#    grad_k_x2 = grad(kernel_fn, argnums=1)
+#    hess_k = jacfwd(grad_k_x2, argnums=0)
+#    #pdb.set_trace()
+#    #res = jnp.outer(jac_K(kernel_fn, x1, x2, dx2, **lp), grad_k_x1(E_x1, E_x2, **lf) * -F_x1)
+#    #res += jnp.outer(jac_K(kernel_fn, x2, x1, dx1, **lp), grad_k_x2(E_x1, E_x2, **lf) * -F_x2)
+#    res = jnp.outer(grad_k_x1(E_x1, E_x2, **lf) * -F_x1, jac_K(kernel_fn, x1, x2, dx2, **lp))
+#    res += jnp.outer(jac_K_dx1(kernel_fn, x1, dx1, x2, **lp), grad_k_x2(E_x1, E_x2, **lf) * -F_x2)
+#    res += hess_k(E_x1, E_x2, **lf) * jnp.outer(-F_x1, -F_x2)
+#    #res += jnp.outer(jnp.dot(-jnp.expand_dims(F_x1, 1), hess_k(E_x1, E_x2, **lf)), -F_x2)
+#    res += kernel_fn(E_x1, E_x2, **lf) * bilinear_hess(kernel_fn, x1, x2, dx1, dx2, **lp)
+#    res += bilinear_hess(kernel_fn, x1, x2, dx1, dx2, **ld)
+#    return res
+#
 
-    Finds the Hessian of the kernel matrix for a single sample `x1` and `x2`. Additional positional arguments 
-    for Monte Carlo samples of the energy evaluation, as necessary for the multifidelity kernel.
 
-    TODO: is this function really necessary? If it isn't, we could re-use a lot of the code developed for normal cov matrices
-    """
-    grad_k_x1 = grad(kernel_fn, argnums=0)
-    grad_k_x2 = grad(kernel_fn, argnums=1)
-    hess_k = jacfwd(grad_k_x1, argnums=1)
-    #pdb.set_trace()
-    res = jnp.outer(jac_K(kernel_fn, x1, x2, dx2, **lp), grad_k_x1(E_x1, E_x2, **lf) * -F_x1)
-    res += jnp.outer(jac_K(kernel_fn, x2, x1, dx1, **lp), grad_k_x2(E_x1, E_x2, **lf) * -F_x2)
-    res += hess_k(E_x1, E_x2, **lf) * jnp.outer(F_x1, F_x2)
-    res += kernel_fn(E_x1, E_x2, **lf) * bilinear_hess(kernel_fn, x1, x2, dx1, dx2, **lp)
-    res += bilinear_hess(kernel_fn, x1, x2, dx1, dx2, **ld)
-    return res
-
-
-def get_K_jac(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx2: jnp.array, E_x1, E_x2, F_x2, lp, lf, ld) -> jnp.ndarray:
+def get_K_jac_analytical(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx2: jnp.array, E_x1, E_x2, F_x2, lp, lf, ld) -> jnp.ndarray:
     """
     Analogous to `get_K`; obtains the single Jacobian matrix of one row of x1 and x2
     TODO: should this be wrt x2 or x1? here thinking it's dx2
@@ -43,6 +47,28 @@ def get_K_jac(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx2: jnp.ar
     res += kernel_fn(E_x1, E_x2, **lf) * jac_K(kernel_fn, x1, x2, dx2, **lp)
     res += jac_K(kernel_fn, x1, x2, dx2, **ld)
     return res
+
+
+def get_K_jac(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx2: jnp.ndarray, E_x1, E_x2, F_x2, lp, lf, ld) -> jnp.ndarray:
+    dx, dE = grad(perdikaris_kernel, argnums=(2, 4))(kernel_fn, x1, x2, E_x1, E_x2, lp, lf, ld)
+    #pdb.set_trace()
+    dx = dx @ dx2
+    dE = dE * -F_x2
+    #k_fn = partial(perdikaris_kernel, kernel_fn=kernel_fn, x1=x1, f_x1=E_x1, lp=lp, lf=lf, ld=ld)
+    #k_fn_E_x2 = partial(k_fn, x2=x2)
+    #dE = jvp(k_fn_E_x2, (E_x2, ), (-F_x2, ))
+    #dE = grad(k_fn_E_x2)(E_x2) * -F_x2
+    #k_fn_x2 = partial(k_fn, f_x2=E_x2)
+    #dx = grad(k_fn_x2)(x2)
+    return dx + dE
+
+
+def get_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.ndarray, E_x1, E_x2, F_x1, F_x2, lp, lf, ld):
+    # in principle, I should be able to re-use get_K_jac...
+    dx, dE = jacfwd(get_K_jac, argnums=(1, 4))(kernel_fn, x1, x2, dx2, E_x1, E_x2, F_x2, lp, lf, ld)
+    dx = (dx @ dx1).T
+    dE = jnp.outer(-F_x1, dE)
+    return dx + dE
 
 
 def _get_full_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.array, E_sample_x1, E_sample_x2, F_sample_x1, F_sample_x2, **kernel_kwargs) -> jnp.ndarray:
@@ -70,9 +96,11 @@ def get_diag_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.n
 
 
 def get_full_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.array, E_sample_x1, E_sample_x2, F_sample_x1, F_sample_x2, iterative=False, **kernel_kwargs) -> jnp.ndarray:
-    K = jax.lax.cond(iterative, partial(_get_full_K_iterative, kernel_fn, **kernel_kwargs), partial(_get_full_K, kernel_fn, **kernel_kwargs), x1, x2, dx1, dx2, E_sample_x1, E_sample_x2, F_sample_x1, F_sample_x2)
+    # disabled iterative kernel matrix building for now
+
+    #K = jax.lax.cond(iterative, partial(_get_full_K_iterative, kernel_fn, **kernel_kwargs), partial(_get_full_K, kernel_fn, **kernel_kwargs), x1, x2, dx1, dx2, E_sample_x1, E_sample_x2, F_sample_x1, F_sample_x2)
     #K = jax.lax.cond(iterative, _get_full_K, _get_full_K_iterative, kernel_fn, x1, x2, dx1, dx2, E_sample_x1, E_sample_x2, **kernel_kwargs)
-    #K = _get_full_K(kernel_fn, x1, x2, dx1, dx2, E_sample_x1, E_sample_x2, **kernel_kwargs)
+    K = _get_full_K(kernel_fn, x1, x2, dx1, dx2, E_sample_x1, E_sample_x2, F_sample_x1, F_sample_x2, **kernel_kwargs)
     m1, m2, d1, d2 = K.shape
     return flatten(K, m1, d1, m2, d2)
 

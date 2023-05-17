@@ -53,7 +53,8 @@ def gp_predict(test_x: jnp.ndarray, test_dx: jnp.ndarray, train_x: jnp.ndarray, 
 
 def gp_predict_energy(test_x: jnp.ndarray, test_dx: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs):
     matrices = get_energy_matrices(test_x, train_x, train_dx, train_y, kernel_fn, **kernel_kwargs)
-    return gp_predict_from_matrices(*matrices, train_y)
+    mu, std = gp_predict_from_matrices(*matrices, train_y)
+    return -mu, std
 
 """
 def gp_predict(test_x: jnp.ndarray, test_dx: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs):
@@ -111,7 +112,7 @@ def gp_energy_force(test_x: jnp.ndarray, test_dx: jnp.ndarray, train_x: jnp.ndar
     F_mu = K_test_hess @ alpha
 
     K_test_jac = get_jac_K(kernel_fn, test_x, train_x, train_dx, **kernel_kwargs)
-    E_mu = K_test_jac @ alpha
+    E_mu = -K_test_jac @ alpha
 
     c_F = solve_triangular(L, K_test_hess, lower=True)
     K_test_test_diag = get_diag_K(kernel_fn, test_x, test_x, test_dx, test_dx, **kernel_kwargs)

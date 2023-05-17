@@ -1,5 +1,5 @@
 import jax.numpy as jnp
-from jax import disable_jit, jit
+from jax import disable_jit, jit, vmap
 import jax
 from typing import Callable
 from functools import partial
@@ -45,17 +45,6 @@ def finite_diff_dk_dx2(partial_f, x1, x2):
 
     return jax.lax.fori_loop(0, len(x2), inner_loop, init_val)
 
-    """
-    for i in range(x2.shape[0]):
-        for j in range(x2.shape[1]):
-            x2_ = x2.at[i, j].add(eps)
-            fwd = partial_f(x1, x2_)
-            x2_ = x2.at[i, j].add(-eps)
-            rev = partial_f(x1, x2_)
-
-            res = res.at[i, j].set((fwd - rev) / 2 / eps)
-    return res
-    """
 
 @partial(jit, static_argnums=0)
 def finite_diff_hess_k(partial_f, x1, x2):
@@ -79,18 +68,12 @@ def finite_diff_hess_k(partial_f, x1, x2):
         return jax.lax.fori_loop(0, x1.shape[1], update, val)
 
     return jax.lax.fori_loop(0, len(x1), inner_loop, init_val)
-    
-    """ 
-    with disable_jit():
-        eps = _get_eps(x1)
-        res = jnp.zeros((*x1.shape, *x2.shape))
-        for i in range(x1.shape[0]):
-            for j in range(x2.shape[1]):
-                x1_ = x1.at[i, j].add(eps)
-                fwd = finite_diff_dk_dx2(partial_f, x1_, x2)
-                x1_ = x1.at[i, j].add(-eps)
-                rev = finite_diff_dk_dx2(partial_f, x1_, x2)
-                
-                res = res.at[i, j].set((fwd - rev) / 2 / eps)
-        return res
-    """
+   
+
+@partial(jit, static_argnums=0)
+def fd_hess_batch(partial_f, x1, x2):
+    fn = vmap(
+            vmap(lambda a,b: finite_diff_hess_k(partial_f, a, b), in_axes=(None, 0)),
+            in_axes=(0, None)
+    )
+    return fn(x1, x2)
