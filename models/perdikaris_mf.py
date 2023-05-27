@@ -1,74 +1,81 @@
-from .sparse import variational_posterior, vposterior_from_matrices_energy_forces 
-from kernels.multifidelity import perdikaris_kernel, get_full_K, get_diag_K, get_jac_K
-from typing import List
-import jax
-import jax.numpy as jnp
-from jax import vmap, jit
-from functools import partial
 import pdb
+import jax.numpy as jnp
+from typing import List, Callable
+import models.exact as exact
+import models.exact_mf as emf
 
 
-def _normal_sample(mu, var, rng_key):
-    new_key, subkey = jax.random.split(rng_key)
-    return mu + jax.random.normal(subkey, mu.shape) * jnp.sqrt(var), new_key
+def _build_test(i: int, test_x: jnp.ndarray, test_dx: jnp.ndarray, train_x: List[jnp.ndarray], train_dx: List[jnp.ndarray]):
+    if i == len(train_x):
+        return test_x, test_dx
+    else:
+        new_test_x = jnp.concatenate([*train_x[i:], test_x])
+        new_test_dx = jnp.concatenate([*train_dx[i:], test_dx])
+        return new_test_x, new_test_dx
 
 
-def get_kernel_matrices(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, test_x, test_dx, E_train, E_inducing, E_test, **kernel_kwargs):
-    """
-    Obtains the needed kernel matrices for variational posterior evaluation for forces
-    """
-    K_mm = get_full_K(kernel_fn, inducing_x, inducing_x, inducing_dx, inducing_dx, E_inducing, E_inducing, **kernel_kwargs)
-    K_mn = get_full_K(kernel_fn, inducing_x, train_x, inducing_dx, train_dx, E_inducing, E_train, iterative=True, **kernel_kwargs)
-    K_test_m = get_full_K(kernel_fn, inducing_x, test_x, inducing_dx, test_dx, E_inducing, E_test, iterative=True, **kernel_kwargs).T
-    K_test_diag = get_diag_K(kernel_fn, test_x, test_x, test_dx, test_dx, E_test, E_test, **kernel_kwargs)
+def gp_energy_force(
+    test_x: jnp.ndarray,
+    test_dx: jnp.ndarray,
+    train_x: List[jnp.ndarray],
+    train_dx: List[jnp.ndarray],
+    train_y: List[jnp.ndarray],
+    kernel_fn: Callable,
+    kernel_kwargs: List[dict]
+    ):
+    # for now, assumes two fidelities 
 
-    return K_mm, K_mn, K_test_m, K_test_diag
+    num_fidelities = len(train_x)
+    num_coords = test_dx.shape[-1]
+    num_training_points = jnp.array([len(i) for i in train_x])
+    num_test = len(test_x)
+    train_idx = jnp.cumsum(num_training_points)
 
+    E_mu = jnp.zeros((num_fidelities, len(test_x)))
+    E_var = jnp.zeros((num_fidelities, len(test_x)))
+    F_mu = jnp.zeros((num_fidelities, len(test_x), num_coords))
+    F_var = jnp.zeros((num_fidelities, len(test_x), num_coords))
 
-def get_kernel_matrices_energy_force(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, test_x, test_dx, E_train, E_inducing, E_test, **kernel_kwargs):
-    K_mm, K_mn, K_test_m_F, K_test_diag_F = get_kernel_matrices(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, test_x, test_dx, E_train, E_inducing, E_test, **kernel_kwargs)
-    K_test_m_E = get_jac_K(kernel_fn, test_x, inducing_x, inducing_dx, E_test, E_inducing, **kernel_kwargs)
-    kernel_fn_diag = vmap(partial(perdikaris_kernel, kernel_fn, **kernel_kwargs), in_axes=(0, 0, 0, 0))
-    K_test_diag_E = kernel_fn_diag(test_x, test_x, E_test, E_test)
-    return K_mm, K_mn, K_test_m_E, K_test_m_F, K_test_diag_E, K_test_diag_F
+    # get new test matrices
+    # start at index 1 because there's no need to predict the training set on the first fidelity
+    new_test_x, new_test_dx = _build_test(1, test_x, test_dx, train_x, train_dx)
 
-
-def vposterior(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, test_x, test_dx, E_train, E_inducing, E_test, train_y, sigma_y, **kernel_kwargs):
-    K_matrices = get_kernel_matrices_energy_force(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, test_x, test_dx, E_train, E_inducing, E_test, **kernel_kwargs)
-    pdb.set_trace()
-    return vposterior_from_matrices_energy_forces(*K_matrices, train_y, sigma_y)
-
-
-def mf_step_E(kernel_fn, train_x, train_dx, test_x, test_dx, inducing_x, inducing_dx, E_mu_train, E_var_train, E_mu_test, E_var_test, E_mu_inducing, E_var_inducing, train_y, sigma_y, **kernel_kwargs):
-    """
-    Samples the energies from the last fidelity and uses it as part of the kernel a la Perdikaris et al. 2017
-    """
-    
-    """
-    #sample from the posterior of the last step
-    #TODO: energy variance calculation is broken due to a rather difficult integral... going to just use the mean for now. 
-    E_train, rng_key = _normal_sample(E_mu_train, E_var_train, rng_key)
-    E_test, rng_key = _normal_sample(E_mu_test, E_var_test, rng_key)
-    E_inducing, rng_key = _normal_sample(E_mu_inducing, E_var_inducing, rng_key)
-    """
-    E_train = E_mu_train
-    E_test = E_mu_test
-    E_inducing = E_mu_inducing
-
-    fn = partial(vposterior, kernel_fn=kernel_fn, train_x=train_x, train_dx=train_dx, inducing_x=inducing_x, inducing_dx=inducing_dx, E_train=E_train, E_inducing=E_inducing, E_test=E_test, train_y=train_y, sigma_y=sigma_y, **kernel_kwargs)
-
-    #TODO: this is a pretty terrible way of evaluating all the necessary energies and can be made much more efficient
-    #for instance, this will compute the same Cholesky decomps multiple times
-    #also disgustingly written :(
-
-    E_mu_train, E_var_train, F_mu_train, F_var_train = vposterior(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, train_x, train_dx, E_train, E_inducing, E_train, train_y, sigma_y, **kernel_kwargs)  # should these use train_y as forces...?
-    E_mu_test, E_var_test, F_mu_test, F_var_test = vposterior(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, test_x, test_dx, E_train, E_inducing, E_test, train_y, sigma_y, **kernel_kwargs)
+    # initialize first fidelity with an exact GP
     #pdb.set_trace()
-    E_mu_inducing, E_var_inducing, F_mu_inducing, F_var_inducing = vposterior(kernel_fn, train_x, train_dx, inducing_x, inducing_dx, inducing_x, inducing_dx, E_train, E_inducing, E_inducing, train_y, sigma_y, **kernel_kwargs)
+    (E_mu_, E_var_), (F_mu_, F_var_) = exact.gp_energy_force(new_test_x, new_test_dx, train_x[0], train_dx[0], train_y[0], kernel_fn, **kernel_kwargs[0])
+    
+    #pdb.set_trace()
+    
+    E_mu = E_mu.at[0].set(E_mu_[-num_test:])
+    E_var = E_var.at[0].set(E_var_[-num_test:])
+    F_mu = F_mu.at[0].set(F_mu_.reshape(-1, num_coords)[-num_test:])
+    F_var = F_var.at[0].set(F_var_.reshape(-1, num_coords)[-num_test:])
 
-    return (
-        (E_mu_train, E_var_train, E_mu_test, E_var_test, E_mu_inducing, E_var_inducing),
-        (F_mu_train, F_var_train, F_mu_test, F_var_test, F_mu_inducing, F_var_inducing),
-    )
+    for i in range(1, num_fidelities):
+        n = num_training_points[i]
+        E_train, F_train = E_mu_[:n], F_mu_.reshape(-1, num_coords)[:n]
+        E_test, F_test = E_mu_[n:], F_mu_.reshape(-1, num_coords)[n:]
 
-# def mf():
+        new_test_x, new_test_dx = _build_test(i+1, test_x, test_dx, train_x, train_dx)
+        #pdb.set_trace()
+        (E_mu_, E_var_), (F_mu_, F_var_) = emf.gp_energy_force(
+                new_test_x, 
+                new_test_dx,
+                E_test,
+                F_test,
+                train_x[i], 
+                train_dx[i],
+                E_train,
+                F_train,
+                train_y[i], 
+                kernel_fn, 
+                **kernel_kwargs[i]
+        )
+
+        #pdb.set_trace()
+        E_mu = E_mu.at[i].set(E_mu_[-num_test:])
+        E_var = E_var.at[i].set(E_var_[-num_test:])
+        F_mu = F_mu.at[i].set(F_mu_.reshape(-1, num_coords)[-num_test:])
+        F_var = F_var.at[i].set(F_var_.reshape(-1, num_coords)[-num_test:])
+
+    return (E_mu, E_var), (F_mu, F_var)

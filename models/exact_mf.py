@@ -29,20 +29,21 @@ def get_energy_matrices(test_x: jnp.ndarray, E_test: jnp.ndarray, train_x: jnp.n
 
 def gp_predict(test_x: jnp.ndarray, test_dx: jnp.ndarray, E_test: jnp.ndarray, F_test: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, E_train: jnp.ndarray, F_train: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs):
     matrices = get_force_matrices(test_x, test_dx, E_test, F_test, train_x, train_dx, E_train, F_train, train_y, kernel_fn, **kernel_kwargs)
-    pdb.set_trace()
+    #pdb.set_trace()
     return gp_predict_from_matrices(*matrices, train_y)
 
 
 def gp_predict_energy(test_x: jnp.ndarray, test_dx: jnp.ndarray, E_test: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, E_train: jnp.ndarray, F_train: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs):
     matrices = get_energy_matrices(test_x, E_test, train_x, train_dx, E_train, F_train, train_y, kernel_fn, **kernel_kwargs)
-    return gp_predict_from_matrices(*matrices, train_y)
+    mu, var = gp_predict_from_matrices(*matrices, train_y)
+    return -mu, var
 
 
 def gp_energy_force(test_x: jnp.ndarray, test_dx: jnp.ndarray, E_test: jnp.ndarray, F_test: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, E_train: jnp.ndarray, F_train: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs): 
     # definitely not the most efficient way to go about this. can do this in principle with a single cholesky decomp, whereas here we're doing it twice...
-    return gp_predict(test_x, test_dx, E_test, F_test, train_x, train_dx, E_train, F_train, train_y, kernel_fn, **kernel_kwargs), \
-        gp_predict_energy(test_x, test_dx, E_test, train_x, train_dx, E_train, F_train, train_y, kernel_fn, **kernel_kwargs)
-
+    return gp_predict_energy(test_x, test_dx, E_test, train_x, train_dx, E_train, F_train, train_y, kernel_fn, **kernel_kwargs), \
+        gp_predict(test_x, test_dx, E_test, F_test, train_x, train_dx, E_train, F_train, train_y, kernel_fn, **kernel_kwargs)
+        
 """
 def gp_predict(test_x: jnp.ndarray, test_dx: jnp.ndarray, E_test: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, E_train: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs):
     # m1, d1, f1 = train_dx.shape

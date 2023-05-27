@@ -105,6 +105,7 @@ def gp_predict_energy(test_x: jnp.ndarray, test_dx: jnp.ndarray, train_x: jnp.nd
 def gp_energy_force(test_x: jnp.ndarray, test_dx: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs): 
     K_train = get_full_K(kernel_fn, train_x, train_x, train_dx, train_dx, **kernel_kwargs)
     jitter = 1e-8 * jnp.eye(len(K_train))
+    #pdb.set_trace()
     L = jnp.linalg.cholesky(K_train + jitter)
     alpha = cho_solve((L, True), train_y)
 
@@ -114,7 +115,7 @@ def gp_energy_force(test_x: jnp.ndarray, test_dx: jnp.ndarray, train_x: jnp.ndar
     K_test_jac = get_jac_K(kernel_fn, test_x, train_x, train_dx, **kernel_kwargs)
     E_mu = -K_test_jac @ alpha
 
-    c_F = solve_triangular(L, K_test_hess, lower=True)
+    c_F = solve_triangular(L, K_test_hess.T, lower=True)
     K_test_test_diag = get_diag_K(kernel_fn, test_x, test_x, test_dx, test_dx, **kernel_kwargs)
     #pdb.set_trace()
     F_var = K_test_test_diag - jnp.sum(jnp.square(c_F), axis=0)
@@ -130,6 +131,6 @@ def gp_energy_force(test_x: jnp.ndarray, test_dx: jnp.ndarray, train_x: jnp.ndar
 
 def gp_correct_energy(E_predict, E_ref):
     # finds integration constant and returns energy
-    #pdb.set_trace()
+    pdb.set_trace()
     c = jnp.mean(E_predict - E_ref)
     return E_predict - c

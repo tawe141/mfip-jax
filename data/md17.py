@@ -18,7 +18,8 @@ def get_molecules(raw_filepath, n=1000, shuffle=False) -> Tuple[List[Atoms], jnp
         a = jnp.arange(len(data['R']))
         key = jax.random.PRNGKey(42)
         jax.random.shuffle(key, a)
-        idx = a[:n]
+        #idx = a[:n]
+        idx = jax.lax.dynamic_slice_in_dim(a, 0, n)
     else:
         idx = jnp.arange(n)
     R = data['R'][idx]
