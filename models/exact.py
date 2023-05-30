@@ -104,6 +104,7 @@ def gp_predict_energy(test_x: jnp.ndarray, test_dx: jnp.ndarray, train_x: jnp.nd
     return mu, var 
 """
 
+@partial(jit, static_argnames=['kernel_fn'])
 def gp_energy_force(test_x: jnp.ndarray, test_dx: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs): 
     K_train = get_full_K(kernel_fn, train_x, train_x, train_dx, train_dx, **kernel_kwargs)
     jitter = 1e-8 * jnp.eye(len(K_train))
@@ -137,11 +138,13 @@ def gp_correct_energy(E_predict, E_ref):
     return E_predict - c
 
 
+@partial(jit, static_argnames=['kernel_fn'])
 def neg_mll(train_x: jnp.ndarray, train_dx: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs):
     K = get_full_K(kernel_fn, train_x, train_x, train_dx, train_dx, **kernel_kwargs)
     return neg_mll_from_K(K, train_y)
 
 
+@jit
 def neg_mll_from_K(K: jnp.ndarray, train_y):
     jitter = 1e-8 * jnp.eye(len(K))
     L = jnp.linalg.cholesky(K + jitter)
@@ -156,7 +159,7 @@ def _optimize_kernel(
     ):
     loss_and_grad_fn = jit(value_and_grad(loss_fn))
 
-    optimizer = optax.adam(**optimizer_kwargs)
+    optimizer = optax.sgd(**optimizer_kwargs)
 
     params = init_kernel_kwargs
     opt_state = optimizer.init(params)

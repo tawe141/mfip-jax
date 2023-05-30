@@ -1,10 +1,12 @@
 import pdb
 import jax
+from jax import jit
 import jax.numpy as jnp
 from typing import List, Callable
 import models.exact as exact
 import models.exact_mf as emf
 import kernels.perdikaris_mf as pmf
+from functools import partial
 
 
 def _build_test(i: int, test_x: jnp.ndarray, test_dx: jnp.ndarray, train_x: List[jnp.ndarray], train_dx: List[jnp.ndarray]):
@@ -83,6 +85,7 @@ def gp_energy_force(
     return (E_mu, E_var), (F_mu, F_var)
 
 
+@partial(jit, static_argnames=['kernel_fn'])
 def neg_mll(
     train_x: jnp.ndarray, 
     train_dx: jnp.ndarray, 

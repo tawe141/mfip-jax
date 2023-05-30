@@ -39,6 +39,7 @@ def gp_predict_energy(test_x: jnp.ndarray, test_dx: jnp.ndarray, E_test: jnp.nda
     return -mu, var
 
 
+@partial(jit, static_argnames=['kernel_fn'])
 def gp_energy_force(test_x: jnp.ndarray, test_dx: jnp.ndarray, E_test: jnp.ndarray, F_test: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, E_train: jnp.ndarray, F_train: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs): 
     # definitely not the most efficient way to go about this. can do this in principle with a single cholesky decomp, whereas here we're doing it twice...
     return gp_predict_energy(test_x, test_dx, E_test, train_x, train_dx, E_train, F_train, train_y, kernel_fn, **kernel_kwargs), \
