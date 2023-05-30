@@ -1,10 +1,12 @@
+import tqdm
 import pdb
 import jax.numpy as jnp
 from jax.scipy.linalg import solve, cho_solve, solve_triangular
-from jax import vmap, jit
+from jax import vmap, jit, value_and_grad
 from kernels.hess import get_full_K, get_jac_K, get_diag_K
 from typing import Callable
 from functools import partial
+import optax
 
 
 def flatten(x: jnp.ndarray, m1: int, d1: int, m2: int, d2: int):
@@ -105,7 +107,6 @@ def gp_predict_energy(test_x: jnp.ndarray, test_dx: jnp.ndarray, train_x: jnp.nd
 def gp_energy_force(test_x: jnp.ndarray, test_dx: jnp.ndarray, train_x: jnp.ndarray, train_dx: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs): 
     K_train = get_full_K(kernel_fn, train_x, train_x, train_dx, train_dx, **kernel_kwargs)
     jitter = 1e-8 * jnp.eye(len(K_train))
-    #pdb.set_trace()
     L = jnp.linalg.cholesky(K_train + jitter)
     alpha = cho_solve((L, True), train_y)
 
@@ -131,6 +132,60 @@ def gp_energy_force(test_x: jnp.ndarray, test_dx: jnp.ndarray, train_x: jnp.ndar
 
 def gp_correct_energy(E_predict, E_ref):
     # finds integration constant and returns energy
-    pdb.set_trace()
+    #pdb.set_trace()
     c = jnp.mean(E_predict - E_ref)
     return E_predict - c
+
+
+def neg_mll(train_x: jnp.ndarray, train_dx: jnp.ndarray, train_y: jnp.ndarray, kernel_fn: Callable, **kernel_kwargs):
+    K = get_full_K(kernel_fn, train_x, train_x, train_dx, train_dx, **kernel_kwargs)
+    return neg_mll_from_K(K, train_y)
+
+
+def neg_mll_from_K(K: jnp.ndarray, train_y):
+    jitter = 1e-8 * jnp.eye(len(K))
+    L = jnp.linalg.cholesky(K + jitter)
+    return jnp.sum(jnp.log(jnp.diag(L))) + 0.5 * jnp.dot(train_y, cho_solve((L, True), train_y))
+
+
+def _optimize_kernel(
+    loss_fn: Callable,
+    init_kernel_kwargs: dict,
+    optimizer_kwargs: dict,
+    num_iterations: int = 100
+    ):
+    loss_and_grad_fn = jit(value_and_grad(loss_fn))
+
+    optimizer = optax.adam(**optimizer_kwargs)
+
+    params = init_kernel_kwargs
+    opt_state = optimizer.init(params)
+
+    @jit
+    def iteration(parameters, optimizer_state):
+        # loss = loss_fn(parameters)
+        # grad_loss = grad_loss_fn(parameters)
+        loss, grad_loss = loss_and_grad_fn(parameters)
+        updates, opt_state = optimizer.update(grad_loss, optimizer_state)
+        new_params = optax.apply_updates(params, updates)
+        return loss, opt_state, new_params
+
+    with tqdm.trange(num_iterations) as pbar:
+        for _ in pbar:
+            loss, opt_state, params = iteration(params, opt_state)
+            pbar.set_description('neg. MLL: %f' % loss)
+
+        return loss, params
+
+
+def optimize_kernel(
+    train_x: jnp.ndarray, 
+    train_dx: jnp.ndarray, 
+    train_y: jnp.ndarray, 
+    kernel_fn: Callable, 
+    init_kernel_kwargs: dict,
+    optimizer_kwargs: dict,
+    num_iterations: int = 100
+    ):
+    loss_fn = lambda params: neg_mll(train_x, train_dx, train_y, kernel_fn, **params)
+    return _optimize_kernel(loss_fn, init_kernel_kwargs, optimizer_kwargs, num_iterations)

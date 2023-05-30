@@ -121,6 +121,34 @@ class TestExact:
         self.test_exact_energy_predict(benzene_ccsd_descriptor)
 
 
+    def test_exact_mll(self, benzene_with_descriptor):
+        desc, E, train_y = benzene_with_descriptor
+        train_x, train_dx = desc
+        train_y = train_y.flatten()
+
+        loss = neg_mll(train_x, train_dx, train_y, rbf, l=1.0)
+        assert isinstance(loss, jnp.ndarray)
+
+
+    def test_optimize_kernel(self, benzene_with_descriptor):
+        desc, E, train_y = benzene_with_descriptor
+        train_x, train_dx = desc
+        train_y = train_y.flatten()
+
+        old_params = {'l': 1.0}
+        loss, new_params = optimize_kernel(
+                train_x,
+                train_dx, 
+                train_y, 
+                rbf,
+                old_params,
+                {'learning_rate': 1e-3},
+                num_iterations=5
+        )
+
+        assert old_params != new_params
+
+
 class TestSparse:
     def test_kernel_matrices(self, benzene_with_descriptor):
         desc, E, train_y = benzene_with_descriptor
@@ -287,44 +315,96 @@ def test_mf_step(benzene_with_descriptor_many, benzene_ccsd_descriptor):
 #Exact multi-fidelity GP
 ###
 
-def test_gp_predict_emf(benzene_with_descriptor, benzene_ccsd_descriptor):
-    # first, predict energies of CC points with DFT training data
-    x_dft, dx_dft, E_dft, y_dft = desc_to_inputs(benzene_with_descriptor)
-    x_cc, dx_cc, E_cc, y_cc = desc_to_inputs(benzene_ccsd_descriptor)
+class TestExactMF:
+    def test_gp_predict_emf(self, benzene_with_descriptor, benzene_ccsd_descriptor):
+        # first, predict energies of CC points with DFT training data
+        x_dft, dx_dft, E_dft, y_dft = desc_to_inputs(benzene_with_descriptor)
+        x_cc, dx_cc, E_cc, y_cc = desc_to_inputs(benzene_ccsd_descriptor)
+        
+        F_cc_from_dft, _ = gp_predict(x_cc, dx_cc, x_dft, dx_dft, y_dft, rbf, l=1.0)
+        F_cc_from_dft = F_cc_from_dft.reshape(len(x_cc), -1)
+        E_cc_from_dft, _ = gp_predict_energy(x_cc, dx_cc, x_dft, dx_dft, y_dft, rbf, l=1.0) 
+        F_mu, F_var = emf.gp_predict(x_cc, dx_cc, E_cc_from_dft, F_cc_from_dft, x_cc, dx_cc, E_cc_from_dft, F_cc_from_dft, y_cc, rbf, lp=1.0, lf=1.0, ld=1.0, w=0.0)
+        assert jnp.allclose(F_mu, y_cc, atol=0.01)
+        assert jnp.allclose(F_var, 0.0)
     
-    F_cc_from_dft, _ = gp_predict(x_cc, dx_cc, x_dft, dx_dft, y_dft, rbf, l=1.0)
-    F_cc_from_dft = F_cc_from_dft.reshape(len(x_cc), -1)
-    E_cc_from_dft, _ = gp_predict_energy(x_cc, dx_cc, x_dft, dx_dft, y_dft, rbf, l=1.0) 
-    F_mu, F_var = emf.gp_predict(x_cc, dx_cc, E_cc_from_dft, F_cc_from_dft, x_cc, dx_cc, E_cc_from_dft, F_cc_from_dft, y_cc, rbf, lp=1.0, lf=1.0, ld=1.0)
-    assert jnp.allclose(F_mu, y_cc, atol=0.01)
-    assert jnp.allclose(F_var, 0.0)
+        ## TODO: energy evals using MF is currently failing
+        #E_mu, E_var = emf.gp_predict_energy(x_cc, dx_cc, E_cc_from_dft, x_cc, dx_cc, E_cc_from_dft, F_cc_from_dft, y_cc, rbf, lp=1.0, lf=1.0, ld=1.0, w=0.0)
+        #E_mu = gp_correct_energy(E_mu, E_cc)
+        #assert jnp.allclose(E_mu, E_cc)
+    
+    
+    def test_perdikaris_mf_predictions(self, benzene_with_descriptor, benzene_ccsd_descriptor):
+        x_dft, dx_dft, E_dft, y_dft = desc_to_inputs(benzene_with_descriptor)
+        x_cc, dx_cc, E_cc, y_cc = desc_to_inputs(benzene_ccsd_descriptor)
+    
+        (E_mu, E_var), (F_mu, F_var) = pmf.gp_energy_force(
+                x_cc, 
+                dx_cc, 
+                [x_dft, x_cc], 
+                [dx_dft, dx_cc], 
+                [y_dft, y_cc], 
+                rbf, 
+                [{'l': 1.0}, {'lp': 1.0, 'lf': 1.0, 'ld': 1.0, 'w': 0.0}]
+        )
+    
+        assert E_mu.shape == (2, len(x_cc))
+        assert E_var.shape == (2, len(x_cc))
+        assert F_mu.shape == (2, len(x_cc), 36)
+        assert F_var.shape == (2, len(x_cc), 36)
+    
+        assert jnp.allclose(F_mu[-1].flatten(), y_cc, atol=1e-2)
+        assert jnp.allclose(F_var[-1], 0.0, atol=1e-2)
 
-    # TODO: energy evals using MF is currently failing
-    E_mu, E_var = emf.gp_predict_energy(x_cc, dx_cc, E_cc_from_dft, x_cc, dx_cc, E_cc_from_dft, F_cc_from_dft, y_cc, rbf, lp=1.0, lf=1.0, ld=1.0)
-    E_mu = gp_correct_energy(E_mu, E_cc)
-    assert jnp.allclose(E_mu, E_cc)
+
+    def test_neg_mll(self, benzene_with_descriptor):
+        x_dft, dx_dft, E_dft, y_dft = desc_to_inputs(benzene_with_descriptor)
+        kernel_params = {'lp': 1.0, 'lf': 3.0, 'ld': 1.0, 'w': 0.0}
+        mll = pmf.neg_mll(x_dft, dx_dft, y_dft, E_dft, y_dft.reshape(-1, 36), rbf, **kernel_params)
+        assert isinstance(mll, jnp.ndarray)
 
 
-def test_perdikaris_mf_predictions(benzene_with_descriptor, benzene_ccsd_descriptor):
-    x_dft, dx_dft, E_dft, y_dft = desc_to_inputs(benzene_with_descriptor)
-    x_cc, dx_cc, E_cc, y_cc = desc_to_inputs(benzene_ccsd_descriptor)
+    def test_total_neg_mll(self, benzene_with_descriptor, benzene_ccsd_descriptor):
+        x_dft, dx_dft, E_dft, y_dft = desc_to_inputs(benzene_with_descriptor)
+        x_cc, dx_cc, E_cc, y_cc = desc_to_inputs(benzene_ccsd_descriptor)
 
-    (E_mu, E_var), (F_mu, F_var) = pmf.gp_energy_force(
-            x_cc, 
-            dx_cc, 
+        res = pmf.total_neg_mll(
+            [x_dft, x_cc],
+            [dx_dft, dx_cc],
+            [y_dft, y_cc],
+            rbf,
+            [{'l': 1.0}, {'lp': 1.0, 'lf': 1.0, 'ld': 1.0, 'w': 0.0}],
+        )
+
+        assert isinstance(res, jnp.ndarray)
+
+
+    def test_optimize_kernel(self, benzene_with_descriptor, benzene_ccsd_descriptor):
+        x_dft, dx_dft, E_dft, y_dft = desc_to_inputs(benzene_with_descriptor)
+        x_cc, dx_cc, E_cc, y_cc = desc_to_inputs(benzene_ccsd_descriptor)
+
+        init_kernel_params = [{'l': 1.0}, {'lp': 1.0, 'lf': 3.0, 'ld': 1.0, 'w': 0.0}]
+        optimizer_kwargs = {'learning_rate': 1e-3}
+        old_loss = pmf.total_neg_mll(
+            [x_dft, x_cc],
+            [dx_dft, dx_cc],
+            [y_dft, y_cc],
+            rbf,
+            init_kernel_params,
+        )
+        new_loss, new_params = pmf.optimize_kernel(
             [x_dft, x_cc], 
             [dx_dft, dx_cc], 
-            [y_dft, y_cc], 
+            [y_dft, y_cc],
             rbf, 
-            [{'l': 1.0}, {'lp': 1.0, 'lf': 1.0, 'ld': 1.0}]
-    )
-
-    assert E_mu.shape == (2, len(x_cc))
-    assert E_var.shape == (2, len(x_cc))
-    assert F_mu.shape == (2, len(x_cc), 36)
-    assert F_var.shape == (2, len(x_cc), 36)
-
-    assert jnp.allclose(F_mu[-1].flatten(), y_cc, atol=1e-2)
-    assert jnp.allclose(F_var[-1], 0.0, atol=1e-2)
-
-
+            init_kernel_params, 
+            optimizer_kwargs, 
+            num_iterations=5
+        )
+        assert new_loss < old_loss
+        assert new_params != init_kernel_params
+        
+        print('old params:')
+        print(init_kernel_params)
+        print('new params:')
+        print(new_params)

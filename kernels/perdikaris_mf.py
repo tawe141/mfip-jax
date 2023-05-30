@@ -8,8 +8,9 @@ from typing import Callable
 
 
 @partial(jit, static_argnums=0)
-def perdikaris_kernel(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, f_x1, f_x2, lp, lf, ld):
-    return kernel_fn(x1, x2, lp) * kernel_fn(f_x1, f_x2, lf) + kernel_fn(x1, x2, ld)
+def perdikaris_kernel(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, f_x1, f_x2, lp, lf, ld, w):
+    w_ = jax.nn.softplus(w)
+    return w_ * kernel_fn(x1, x2, lp) * kernel_fn(f_x1, f_x2, lf) + (1 - w_) * kernel_fn(x1, x2, ld)
 
 
 #def get_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.array, E_x1, E_x2, F_x1, F_x2, lp, lf, ld) -> jnp.ndarray:
@@ -37,7 +38,7 @@ def perdikaris_kernel(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, f_x
 #
 
 
-def get_K_jac_analytical(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx2: jnp.array, E_x1, E_x2, F_x2, lp, lf, ld) -> jnp.ndarray:
+def get_K_jac_analytical(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx2: jnp.array, E_x1, E_x2, F_x2, lp, lf, ld, w) -> jnp.ndarray:
     """
     Analogous to `get_K`; obtains the single Jacobian matrix of one row of x1 and x2
     TODO: should this be wrt x2 or x1? here thinking it's dx2
@@ -49,8 +50,8 @@ def get_K_jac_analytical(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, 
     return res
 
 
-def get_K_jac(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx2: jnp.ndarray, E_x1, E_x2, F_x2, lp, lf, ld) -> jnp.ndarray:
-    dx, dE = grad(perdikaris_kernel, argnums=(2, 4))(kernel_fn, x1, x2, E_x1, E_x2, lp, lf, ld)
+def get_K_jac(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx2: jnp.ndarray, E_x1, E_x2, F_x2, lp, lf, ld, w=0.0) -> jnp.ndarray:
+    dx, dE = grad(perdikaris_kernel, argnums=(2, 4))(kernel_fn, x1, x2, E_x1, E_x2, lp, lf, ld, w)
     #pdb.set_trace()
     dx = dx @ dx2
     dE = dE * -F_x2
@@ -63,9 +64,9 @@ def get_K_jac(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx2: jnp.nd
     return dx + dE
 
 
-def get_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.ndarray, E_x1, E_x2, F_x1, F_x2, lp, lf, ld):
+def get_K(kernel_fn: Callable, x1: jnp.ndarray, x2: jnp.ndarray, dx1: jnp.ndarray, dx2: jnp.ndarray, E_x1, E_x2, F_x1, F_x2, lp, lf, ld, w=0.0):
     # in principle, I should be able to re-use get_K_jac...
-    dx, dE = jacfwd(get_K_jac, argnums=(1, 4))(kernel_fn, x1, x2, dx2, E_x1, E_x2, F_x2, lp, lf, ld)
+    dx, dE = jacfwd(get_K_jac, argnums=(1, 4))(kernel_fn, x1, x2, dx2, E_x1, E_x2, F_x2, lp, lf, ld, w)
     dx = (dx @ dx1).T
     dE = jnp.outer(-F_x1, dE)
     return dx + dE
