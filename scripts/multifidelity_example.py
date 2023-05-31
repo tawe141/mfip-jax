@@ -1,3 +1,4 @@
+import jax
 import pdb
 import argparse
 from data.md17 import get_molecules
@@ -40,21 +41,25 @@ def setup_data(num_dft, num_ccsd):
 def make_predictions(num_dft, num_ccsd):
     (train_cc_x, train_cc_dx, train_cc_y), (test_cc_x, test_cc_dx, test_cc_y), (dft_x, dft_dx, dft_y) = setup_data(num_dft, num_ccsd)
         
-    init_params = [{'l': 1e-4}, {'lp': 1.0, 'lf': 3.0, 'ld': 1e-4, 'w': -15.0}]
+    init_params = [{'l': -3.0}, {'lp': 1.0, 'lf': 3.0, 'ld': -3.0, 'w': -15.0}]
     (E_mu, E_var), (F_mu, F_var) = exact.gp_energy_force(test_cc_x, test_cc_dx, train_cc_x, train_cc_dx, train_cc_y, rbf, l=init_params[1]['ld'])
     F_rmse = mean_squared_error(test_cc_y, F_mu, squared=False)
     print('RMSE on just CC data:')
     print(F_rmse)
-    
-    (E_mu, E_var), (F_mu, F_var) = pmf.gp_energy_force(
-            test_cc_x,
-            test_cc_dx,
-            [dft_x, train_cc_x],
-            [dft_dx, train_cc_dx],
-            [dft_y, train_cc_y],
-            rbf,
-            init_params,
-    )
+
+    with jax.profiler.start_trace('tmp/benchmarking'):
+
+        (E_mu, E_var), (F_mu, F_var) = pmf.gp_energy_force(
+                test_cc_x,
+                test_cc_dx,
+                [dft_x, train_cc_x],
+                [dft_dx, train_cc_dx],
+                [dft_y, train_cc_y],
+                rbf,
+                init_params,
+        )
+        F_mu.block_until_ready()
+
     F_rmse = mean_squared_error(test_cc_y, F_mu[-1].flatten(), squared=False)
     print('RMSE on unoptimized MF GP using PBE and CC data: ')
     print(F_rmse)
